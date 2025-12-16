@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables (DON'T COMMIT THESE!)
+.env
+*.env
+
+# Database files (DON'T COMMIT THESE!)
+*.db
+complaints.db
+
+# Excel files
+*.xlsx
+Complaint_Log.xlsx
+
+# Logs
+*.log
+
+# Streamlit secrets (DON'T COMMIT THIS!)
+.streamlit/secrets.toml
+
+# Build artifacts
+*.exe
+*.spec
+launcher.py
+launcher_threaded.py
+
+# Documentation (optional - keep if you want)
+# BUILD_*.md
+# TROUBLESHOOTING.md
