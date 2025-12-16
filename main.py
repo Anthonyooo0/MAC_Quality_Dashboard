@@ -126,10 +126,15 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["Mail.Read", "User.Read"]
 app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
 
+# ====================
+# FIXED AUTHENTICATION FUNCTION
+# Replace the get_token() function in your main.py with this version
+# ====================
+
 def get_token():
     """
     Streamlit-compatible authentication using device code flow.
-    Shows the device code in the Streamlit UI instead of Tkinter popup.
+    Shows the device code in the Streamlit UI with proper button layout.
     Stores token in session state for reuse.
     """
     # Check if we already have a valid token in session state
@@ -159,8 +164,9 @@ def get_token():
     
     flow = st.session_state.device_flow
     
-    # Display authentication UI in sidebar or main area
+    # Display authentication UI
     st.warning("🔐 **Microsoft Authentication Required**")
+    
     st.info("""
     **To sync emails, you need to authenticate with Microsoft:**
     
@@ -170,20 +176,21 @@ def get_token():
     4. Come back here and click "Check Authentication"
     """)
     
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # Show the device code prominently
+    st.code(flow['user_code'], language=None)
+    
+    # Create buttons in a row - FIXED LAYOUT
+    col1, col2 = st.columns(2)
     
     with col1:
-        st.code(flow['user_code'], language=None)
+        # Open login page button with proper link
+        login_url = "https://microsoft.com/devicelogin"
+        st.link_button("🌐 Open Login Page", login_url, use_container_width=True)
     
     with col2:
-        if st.button("🌐 Open Login Page", use_container_width=True):
-            st.markdown(f'<meta http-equiv="refresh" content="0; url=https://microsoft.com/devicelogin">', 
-                       unsafe_allow_html=True)
-            st.info("[Click here if page doesn't open](https://microsoft.com/devicelogin)")
-    
-    with col3:
-        if st.button("✅ Check Auth", use_container_width=True, type="primary"):
-            with st.spinner("Verifying..."):
+        # Check authentication button
+        if st.button("✅ Check Authentication", use_container_width=True, type="primary"):
+            with st.spinner("Verifying authentication..."):
                 try:
                     result = app.acquire_token_by_device_flow(flow)
                     
@@ -192,35 +199,38 @@ def get_token():
                         st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
                         st.session_state.pop("device_flow", None)
                         st.session_state.pop("auth_started", None)
-                        st.success("✅ Authenticated!")
-                        time.sleep(0.5)
+                        st.success("✅ Authentication successful!")
+                        time.sleep(1)
                         st.rerun()
                     else:
                         error_desc = result.get('error_description', 'Unknown error')
-                        st.error(f"Authentication failed: {error_desc}")
-                        if "pending" not in error_desc.lower():
-                            # Reset flow on actual failure (not just "pending")
+                        if "pending" in error_desc.lower():
+                            st.warning("⏳ Still waiting for you to complete sign-in. Try again in a moment.")
+                        else:
+                            st.error(f"Authentication failed: {error_desc}")
+                            # Reset flow on actual failure
                             st.session_state.pop("device_flow", None)
                 except Exception as e:
-                    st.error(f"Error: {str(e)}")
+                    st.error(f"Authentication error: {str(e)}")
     
-    # Timeout warning
+    # Show timeout warning
     if "auth_started" in st.session_state:
         elapsed = time.time() - st.session_state.auth_started
         remaining = max(0, 900 - elapsed)  # 15 minute timeout
+        
         if remaining > 0:
-            st.caption(f"⏱️ Code expires in {int(remaining//60)} minutes {int(remaining%60)} seconds")
+            minutes = int(remaining // 60)
+            seconds = int(remaining % 60)
+            st.caption(f"⏱️ Code expires in {minutes}m {seconds}s")
         else:
-            st.error("⏰ Code expired. Please refresh the page to get a new code.")
-            if st.button("🔄 Get New Code"):
+            st.error("⏰ Code expired. Click below to get a new code.")
+            if st.button("🔄 Get New Code", use_container_width=True):
                 st.session_state.pop("device_flow", None)
                 st.session_state.pop("auth_started", None)
                 st.rerun()
     
     # Stop execution until authenticated
     st.stop()
-
-# [KEEP ALL YOUR ORIGINAL HELPER FUNCTIONS - They don't use Tkinter]
 
 SUBJECT_PREFIXES = ("re:", "fw:", "fwd:", "sv:", "答复:", "回复:", "aw:", "wg:", "r:")
 
@@ -1226,3 +1236,4 @@ if __name__ == "__main__":
     finally:
         dt = time.time() - t0
         print(f"[DONE] Elapsed: {dt:.1f}s")
+
