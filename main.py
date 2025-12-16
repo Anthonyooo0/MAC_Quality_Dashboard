@@ -10,14 +10,14 @@ from urllib.parse import urlencode
 from dateutil.parser import parse as dt_parse
 from dateutil.tz import tzutc
 
-
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from msal import PublicClientApplication
-from dotenv import load_dotenv
+import streamlit as st
 
 from typing import Tuple
+
 # =========================
 # Paths / packaging support
 # =========================
@@ -27,7 +27,31 @@ def base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 BASE_DIR = base_dir()
-load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+# Load environment variables from Streamlit secrets (cloud) or .env (local)
+try:
+    # Try Streamlit secrets first (for cloud deployment)
+    GEMINI_API_KEY = st.secrets["credentials"]["GEMINI_API_KEY"]
+    TENANT_ID = st.secrets["credentials"]["TENANT_ID"]
+    CLIENT_ID = st.secrets["credentials"]["CLIENT_ID"]
+    CLIENT_SECRET = st.secrets["credentials"].get("CLIENT_SECRET", "")
+    MAILBOX = st.secrets["credentials"]["MAILBOX"]
+    START_DATE = st.secrets["credentials"].get("START_DATE", "2025-01-01T00:00:00Z")
+    PN_MASTER_PATH = st.secrets["credentials"].get("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
+except (KeyError, FileNotFoundError, AttributeError):
+    # Fall back to .env for local development
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(BASE_DIR, ".env"))
+    except:
+        pass
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    TENANT_ID = os.getenv("TENANT_ID")
+    CLIENT_ID = os.getenv("CLIENT_ID")
+    CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
+    START_DATE = os.getenv("START_DATE", "2025-01-01T00:00:00Z")
+    MAILBOX = os.getenv("MAILBOX", "me")
+    PN_MASTER_PATH = os.getenv("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
 
 # Quiet down gRPC / absl noise BEFORE importing google-generativeai
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
@@ -35,7 +59,10 @@ os.environ.setdefault("GRPC_LOG_SEVERITY", "ERROR")
 os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("ABSL_LOG_SEVERITY", "info")
 
-import google.generativeai as genai  # noqa: E402 (import after env setup)
+import google.generativeai as genai  # noqa: E402
+
+DB_PATH = os.path.join(BASE_DIR, "complaints.db")
+EXCEL_PATH = os.path.join(BASE_DIR, "Complaint_Log.xlsx")
 
 def _mask_key(k: str) -> str:
     if not k:
@@ -45,49 +72,21 @@ def _mask_key(k: str) -> str:
     return k[:4] + "..." + k[-4:]
 
 def _gemini_preflight(genai_mod, api_key: str, model_name: str = "gemini-2.0-flash") -> bool:
-    """
-    Do a tiny generate to confirm the API key works. Returns True on success.
-    If the key is invalid/expired, prints a helpful message and returns False.
-    """
+    """Check if Gemini API key works"""
     try:
         genai_mod.configure(api_key=api_key)
         model = genai_mod.GenerativeModel(
             model_name=model_name,
             generation_config={"response_mime_type": "application/json", "temperature": 0},
         )
-        # very cheap ping
         resp = model.generate_content("Return {\"ping\":true}")
         _ = getattr(resp, "text", None)
         return True
     except Exception as e:
-        msg = str(e)
-        if "API key expired" in msg or "API_KEY_INVALID" in msg:
-            print("[FATAL] GEMINI_API_KEY looks invalid or expired. Fix it in your .env.\n"
-                  "Tips:\n"
-                  "  • In Google AI Studio: create a fresh API key.\n"
-                  "  • In .env: GEMINI_API_KEY=<paste-without-quotes-or-spaces>\n"
-                  "  • Restart your shell/IDE after editing .env.\n"
-                  "  • Ensure only one GEMINI_API_KEY is set (no user/system env overriding it).\n"
-                  "  • Run gemini_smoketest.py to verify.\n")
-            return False
-        print("[FATAL] Gemini preflight failed: ", e)
+        st.error(f"Gemini API key invalid or expired: {e}")
         return False
 
-from prompts import PROMPT_TEXT  # your updated prompt with is_complaint + PN-only
-
-# ==============
-# Env variables
-# ==============
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # put your key in .env
-TENANT_ID = os.getenv("TENANT_ID")
-CLIENT_ID = os.getenv("CLIENT_ID")
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-START_DATE = os.getenv("START_DATE", "2025-01-01T00:00:00Z")
-MAILBOX = os.getenv("MAILBOX", "me")
-PN_MASTER_PATH = os.getenv("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
-
-DB_PATH = os.path.join(BASE_DIR, "complaints.db")
-EXCEL_PATH = os.path.join(BASE_DIR, "Complaint_Log.xlsx")
+from prompts import PROMPT_TEXT
 
 # ============================
 # Complaint keyword gate list
@@ -99,10 +98,8 @@ KEYWORDS = [
     "RMA","return","replacement","rework"
 ]
 
-# Strong signals that should pass even if KEYWORDS miss
 STRONG_SIGNALS = {"ncmr", "scar", "dmr", "rma", "nonconformance", "non-conformance", "ncr", "car", "8d"}
 
-# Heuristic blocklists to keep noise (newsletters/training) out
 SENDER_BLOCKLIST = {
     "eminder@culturewise.com",
     "no-reply@culturewise.com",
@@ -123,72 +120,108 @@ SUBJECT_BLOCK_PHRASES = {
 MISSING_PN = "No part number provided"
 
 # =================
-# Graph Auth setup
+# Graph Auth setup - STREAMLIT VERSION
 # =================
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPES = ["Mail.Read", "User.Read"]  # delegated
+SCOPES = ["Mail.Read", "User.Read"]
 app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
 
 def get_token():
     """
-    Delegated auth:
-      1) Try silent using cached account/refresh token
-      2) Fallback to Device Code prompt (shown in Tkinter popup instead of terminal)
+    Streamlit-compatible authentication using device code flow.
+    Shows the device code in the Streamlit UI instead of Tkinter popup.
+    Stores token in session state for reuse.
     """
+    # Check if we already have a valid token in session state
+    if "access_token" in st.session_state and "token_expires_at" in st.session_state:
+        if time.time() < st.session_state.token_expires_at:
+            return st.session_state.access_token
+    
+    # Try silent authentication with cached account
     accounts = app.get_accounts()
-    result = app.acquire_token_silent(SCOPES, account=accounts[0] if accounts else None)
-
-    if not result:
-        # Start device-code login
+    if accounts:
+        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+        if result and "access_token" in result:
+            st.session_state.access_token = result["access_token"]
+            st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+            return result["access_token"]
+    
+    # Need to show device code flow UI
+    if "device_flow" not in st.session_state:
+        # Start device code flow
         flow = app.initiate_device_flow(scopes=SCOPES)
         if "user_code" not in flow:
-            raise RuntimeError(f"Device code flow error: {flow}")
-
-        # Show Tkinter popup INSTEAD of terminal
-        from tkinter import Tk, Label, Button, Toplevel, Entry
-        import webbrowser
-
-        popup = Toplevel()
-        popup.title("Microsoft Login Required")
-        popup.geometry("450x220")
-
-        Label(popup, text="To sign in, follow these steps:", font=("Segoe UI", 12, "bold")).pack(pady=5)
-
-        Label(popup, text="1. Open this page:", font=("Segoe UI", 10)).pack(anchor="w", padx=10)
-        Label(popup, text="https://microsoft.com/devicelogin", fg="blue").pack(anchor="w", padx=20)
-
-        Label(popup, text="2. Enter this code:", font=("Segoe UI", 10)).pack(anchor="w", padx=10)
+            st.error(f"Device code flow error: {flow}")
+            st.stop()
         
-        code_entry = Entry(popup, font=("Segoe UI", 14, "bold"), justify="center")
-        code_entry.insert(0, flow["user_code"])
-        code_entry.pack(padx=20, pady=5)
+        st.session_state.device_flow = flow
+        st.session_state.auth_started = time.time()
+    
+    flow = st.session_state.device_flow
+    
+    # Display authentication UI in sidebar or main area
+    st.warning("🔐 **Microsoft Authentication Required**")
+    st.info("""
+    **To sync emails, you need to authenticate with Microsoft:**
+    
+    1. Click "Open Login Page" below
+    2. Enter the code shown
+    3. Sign in with your work account
+    4. Come back here and click "Check Authentication"
+    """)
+    
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.code(flow['user_code'], language=None)
+    
+    with col2:
+        if st.button("🌐 Open Login Page", use_container_width=True):
+            st.markdown(f'<meta http-equiv="refresh" content="0; url=https://microsoft.com/devicelogin">', 
+                       unsafe_allow_html=True)
+            st.info("[Click here if page doesn't open](https://microsoft.com/devicelogin)")
+    
+    with col3:
+        if st.button("✅ Check Auth", use_container_width=True, type="primary"):
+            with st.spinner("Verifying..."):
+                try:
+                    result = app.acquire_token_by_device_flow(flow)
+                    
+                    if "access_token" in result:
+                        st.session_state.access_token = result["access_token"]
+                        st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                        st.session_state.pop("device_flow", None)
+                        st.session_state.pop("auth_started", None)
+                        st.success("✅ Authenticated!")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        error_desc = result.get('error_description', 'Unknown error')
+                        st.error(f"Authentication failed: {error_desc}")
+                        if "pending" not in error_desc.lower():
+                            # Reset flow on actual failure (not just "pending")
+                            st.session_state.pop("device_flow", None)
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    
+    # Timeout warning
+    if "auth_started" in st.session_state:
+        elapsed = time.time() - st.session_state.auth_started
+        remaining = max(0, 900 - elapsed)  # 15 minute timeout
+        if remaining > 0:
+            st.caption(f"⏱️ Code expires in {int(remaining//60)} minutes {int(remaining%60)} seconds")
+        else:
+            st.error("⏰ Code expired. Please refresh the page to get a new code.")
+            if st.button("🔄 Get New Code"):
+                st.session_state.pop("device_flow", None)
+                st.session_state.pop("auth_started", None)
+                st.rerun()
+    
+    # Stop execution until authenticated
+    st.stop()
 
-        def copy_code():
-            popup.clipboard_clear()
-            popup.clipboard_append(flow["user_code"])
+# [KEEP ALL YOUR ORIGINAL HELPER FUNCTIONS - They don't use Tkinter]
 
-        def open_page():
-            webbrowser.open("https://microsoft.com/devicelogin")
-
-        Button(popup, text="Copy Code", command=copy_code).pack(side="left", padx=40, pady=10)
-        Button(popup, text="Open Login Page", command=open_page).pack(side="right", padx=40, pady=10)
-
-        popup.grab_set()  # force user to complete login
-        popup.focus_force()
-
-        # Now wait for user sign-in
-        result = app.acquire_token_by_device_flow(flow)
-
-    if "access_token" not in result:
-        raise RuntimeError(f"Auth failed: {result}")
-
-    return result["access_token"]
-
-
-
-# =========
-# Helpers
-# =========
 SUBJECT_PREFIXES = ("re:", "fw:", "fwd:", "sv:", "答复:", "回复:", "aw:", "wg:", "r:")
 
 def clean_subject(subject: str) -> str:
@@ -214,15 +247,12 @@ QUOTED_MARKERS = [
 ]
 
 def to_et_naive(dt_utc_str: str):
-    """
-    Convert Graph ISO UTC string -> Eastern Time (ET), return a *naive* datetime
-    so Excel can format it as a real date/time cell.
-    """
+    """Convert Graph ISO UTC string -> Eastern Time (ET), return a *naive* datetime"""
     try:
         from zoneinfo import ZoneInfo
         dt = datetime.fromisoformat(dt_utc_str.replace("Z", "+00:00"))
         dt_et = dt.astimezone(ZoneInfo("America/New_York"))
-        return dt_et.replace(tzinfo=None)  # Excel wants naive
+        return dt_et.replace(tzinfo=None)
     except Exception:
         return None
 
@@ -255,18 +285,15 @@ def is_noise_email(subject: str, sender: str, body: str) -> bool:
     b = (body or "").lower()
     sender = (sender or "").lower()
 
-    # Sender/domain blocks
     if sender in SENDER_BLOCKLIST:
         return True
     dom = sender.split("@")[-1] if "@" in sender else ""
     if dom in DOMAIN_BLOCKLIST:
         return True
 
-    # Subject stop phrases
     if any(phrase in s for phrase in SUBJECT_BLOCK_PHRASES):
         return True
 
-    # If there are no complaint keywords and no strong signals anywhere, treat as noise
     text = f"{s} {b}"
     has_keyword = any(kw.lower() in text for kw in KEYWORDS)
     has_strong = any(sig in text for sig in STRONG_SIGNALS)
@@ -275,23 +302,17 @@ def is_noise_email(subject: str, sender: str, body: str) -> bool:
 
     return False
 
-# ---------- deep origin extraction helpers ----------
-
-# accepted "Sent:"/"Date:" label variants found in Outlook/localized headers
+# [INCLUDE ALL YOUR DATETIME AND ORIGIN EXTRACTION FUNCTIONS]
 _SENT_LABELS = ("Sent:", "Date:", "Enviado:", "Fecha:", "Verzonden:", "Gesendet:")
-
-# some common fallback formats if dateutil isn't available
 _FALLBACK_DTFMTS = [
-    "%A, %B %d, %Y %I:%M %p",  # Wednesday, June 11, 2025 3:21 PM
-    "%a, %b %d, %Y %I:%M %p",  # Wed, Jun 11, 2025 3:21 PM
+    "%A, %B %d, %Y %I:%M %p",
+    "%a, %b %d, %Y %I:%M %p",
     "%m/%d/%Y %I:%M %p",
     "%Y-%m-%d %H:%M",
 ]
-
 _EMAIL_ANYWHERE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.I)
 
 def _parse_human_datetime_to_utc_iso(s: str) -> str:
-    """Return 'YYYY-MM-DDTHH:MM:SSZ' or '' if cannot parse. Assume ET if tz missing."""
     if not s:
         return ""
     s = s.strip()
@@ -327,7 +348,6 @@ def _iso_to_dt(s: str):
         return None
 
 def _min_iso(*values: str) -> str:
-    """Return the earliest (min) valid ISO8601 among non-empty inputs."""
     best = None
     for v in values:
         if not v:
@@ -340,26 +360,12 @@ def _min_iso(*values: str) -> str:
     return best.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if best else ""
 
 def extract_origins_deep(full_body_plain: str):
-    """
-    Scan full quoted history and return the earliest (email, utc_iso) we can find.
-    Looks for two patterns:
-
-    (A) Header pairs:
-        From: Name <email@x.com>
-        Sent: Wednesday, June 11, 2025 3:21 PM
-
-    (B) Gmail-style / inline:
-        On Wed, Jun 11, 2025 at 3:21 PM Name <email@x.com> wrote:
-    """
     if not full_body_plain:
         return "", ""
-
     lines = full_body_plain.splitlines()
-    candidates = []  # list[(email, iso)]
-
-    # (A) collect all From + (Sent/Date) pairs, choose earliest
+    candidates = []
     for i, line in enumerate(lines):
-        if "From:" in line:  # cheap prefilter
+        if "From:" in line:
             m_from = re.search(r"\bFrom:\s*(.*)", line, flags=re.I)
             if not m_from:
                 continue
@@ -367,7 +373,6 @@ def extract_origins_deep(full_body_plain: str):
             email = emails[0].strip() if emails else ""
             if not email:
                 continue
-            # look ahead a few lines for Sent/Date variants
             for j in range(i + 1, min(i + 10, len(lines))):
                 l2 = lines[j]
                 if any(l2.strip().lower().startswith(lbl.lower()) for lbl in _SENT_LABELS):
@@ -376,8 +381,6 @@ def extract_origins_deep(full_body_plain: str):
                     if iso:
                         candidates.append((email, iso))
                         break
-
-    # (B) "On <date>, Name <email> wrote:" style
     inline = re.findall(
         r"^\s*On\s+(.+?)\s+(?:wrote|escribió):.*?([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})",
         full_body_plain, flags=re.I | re.M
@@ -386,62 +389,38 @@ def extract_origins_deep(full_body_plain: str):
         iso = _parse_human_datetime_to_utc_iso(date_part)
         if iso:
             candidates.append((email.strip(), iso))
-
     if not candidates:
         return "", ""
-
-    # pick the earliest by iso time
     email, iso = min(candidates, key=lambda t: _iso_to_dt(t[1]) or datetime.max)
     return email, iso
 
-# Back-compat alias used by extract_origin_from_history (if needed elsewhere)
-
 def extract_earliest_datetime_anywhere(text: str) -> str:
-    """
-    Find the earliest datetime mentioned *anywhere* in the text and return it as UTC ISO
-    (YYYY-MM-DDTHH:MM:SSZ). Return "" if nothing can be parsed.
-    We cast a wide regex net for date-like tokens, then validate/normalize with
-    _parse_human_datetime_to_utc_iso and choose the minimum via _min_iso.
-    """
     if not text:
         return ""
     candidates = set()
-
-    # ISO-like: 2025-09-10 or 2025-09-10 14:55
     for m in re.finditer(r"\b\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?)?\b", text):
         candidates.add(m.group(0))
-
-    # US mm/dd/yyyy (optionally with time)
     for m in re.finditer(r"\b\d{1,2}/\d{1,2}/\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?\s?(?:AM|PM)?)?\b", text, flags=re.I):
         candidates.add(m.group(0))
-
-    # Month name first, e.g. "September 10, 2025 4:55 PM"
     for m in re.finditer(r"\b([A-Z][a-z]+)\s+\d{1,2},\s+\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?\s?(?:AM|PM)?)?\b", text):
         candidates.add(m.group(0))
-
-    # Gmail-style inline: "On Wed, Jun 11, 2025 at 3:21 PM Name <...> wrote:"
     for m in re.finditer(r"\bOn\s+(.+?)\s+(?:wrote|escribió):", text, flags=re.I):
         candidates.add(m.group(1))
-
     if not candidates:
         return ""
-
-    # Parse each, normalize to UTC ISO, then pick the earliest
     iso_values = []
     for tok in candidates:
         iso = _parse_human_datetime_to_utc_iso(tok)
         if iso:
             iso_values.append(iso)
-
     if not iso_values:
         return ""
-    # Return earliest
     return _min_iso(*iso_values)
+
 def _to_utc_iso_from_sent(s: str) -> str:
     return _parse_human_datetime_to_utc_iso(s)
 
 def extract_origin_from_history(full_body_plain: str):
-    """Legacy simple origin finder (kept for compatibility)."""
     if not full_body_plain:
         return "", ""
     lines = full_body_plain.splitlines()
@@ -462,31 +441,25 @@ def extract_origin_from_history(full_body_plain: str):
                 break
     return origin_email, origin_sent_iso
 
-# ---- Canonical case key helpers ----
+# [INCLUDE ALL YOUR CASE KEY AND PN FUNCTIONS]
 CASE_ID_PATTERNS = [
     (r'\bNCMR[\s:-]*([0-9]{4}[-/][0-9]{3,6}|[0-9]{6,})', 'ncmr'),
     (r'\bSCAR[\s:-]*([0-9]{4}[-/][0-9]{3,6}|[0-9]{5,})', 'scar'),
     (r'\bDMR[\s:-]*([0-9]{4}[-/][0-9]{3,6}|[0-9]{5,})', 'dmr'),
-    (r'\bNCR[\s:-]*([0-9]{3,})',                          'ncr'),
-    (r'\bCAR[\s:-]*([0-9]{3,})',                          'car'),
+    (r'\bNCR[\s:-]*([0-9]{3,})', 'ncr'),
+    (r'\bCAR[\s:-]*([0-9]{3,})', 'car'),
     (r'\bPO\s*(?:#|No\.?|Number)?\s*[:\-]?\s*([0-9]{5,})', 'po'),
     (r'\bSO\s*(?:#|No\.?|Number)?\s*[:\-]?\s*([0-9]{5,})', 'so'),
 ]
 
 def compute_first_seen_initiator(conversation_id, full_body_plain, fallback_sender, mailbox):
-    import re
-    from dateutil.parser import parse as dt_parse
-    from dateutil.tz import tzutc
-
     pattern = re.compile(
         r"From:\s*(.+?)<\s*([\w\.-]+@[\w\.-]+)\s*>.*?Sent:\s*([A-Za-z0-9,:\s\-]+(?:AM|PM)?)",
         re.IGNORECASE
     )
-
     matches = pattern.findall(full_body_plain)
     earliest_dt = None
     initiator_email = None
-
     for _, email, sent_raw in matches:
         try:
             sent_dt = dt_parse(sent_raw.strip(), fuzzy=True)
@@ -494,18 +467,15 @@ def compute_first_seen_initiator(conversation_id, full_body_plain, fallback_send
                 sent_dt = sent_dt.replace(tzinfo=tzutc())
             else:
                 sent_dt = sent_dt.astimezone(tzutc())
-
             if not earliest_dt or sent_dt < earliest_dt:
                 earliest_dt = sent_dt
                 initiator_email = email.strip()
-        except Exception as e:
+        except Exception:
             continue
-
     iso = earliest_dt.isoformat() if earliest_dt else ""
     return iso, initiator_email or fallback_sender
 
 def extract_external_id(text: str) -> str:
-    """Pull a stable external ID like NCMR/SCAR/DMR/PO/SO from subject/body/summary."""
     t = text or ""
     for pat, tag in CASE_ID_PATTERNS:
         m = re.search(pat, t, flags=re.I)
@@ -522,13 +492,6 @@ def normalize_case_key(raw: str) -> str:
     return s[:80]
 
 def canonical_case_key(domain: str, pn_norm: str, subject: str, text_for_ids: str) -> str:
-    """
-    Canonical key rules:
-      - If PN and an external ID (NCMR/SCAR/DMR/PO/SO) exist => domain-pn-id
-      - Else if PN only => domain-pn
-      - Else if ID only => domain-id
-      - Else fallback => domain-normalized_subject (short)
-    """
     dom = (domain or "").lower()
     ext = extract_external_id(f"{subject or ''} {text_for_ids or ''}")
     if pn_norm:
@@ -556,8 +519,8 @@ def to_et(dt_utc_str: str) -> str:
         return dt_utc_str
     return dt.strftime("%-I:%M %p %m/%d/%Y") if os.name != "nt" else dt.strftime("%#I:%M %p %m/%d/%Y")
 
+# [DATABASE FUNCTIONS]
 def touch_conversation(conversation_id: str, received_utc: str):
-    """Mark a thread as seen without changing other fields (prevents reprocessing)."""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute("UPDATE complaints SET received_utc=? WHERE conversation_id=?", (received_utc, conversation_id))
@@ -574,7 +537,7 @@ def get_by_conversation_id(conv_id: str):
     """, (conv_id,))
     row = cur.fetchone()
     con.close()
-    return row  # (conversation_id, received_utc, part_number) or None
+    return row
 
 def get_by_case_key(case_key: str):
     con = sqlite3.connect(DB_PATH)
@@ -588,11 +551,9 @@ def get_by_case_key(case_key: str):
     """, (case_key,))
     row = cur.fetchone()
     con.close()
-    return row  # (conversation_id, received_utc, part_number) or None
+    return row
 
-# ===== DB migration helpers =====
 def ensure_columns():
-    """Add new persistent columns if they don't exist yet."""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute("PRAGMA table_info(complaints)")
@@ -605,7 +566,6 @@ def ensure_columns():
     con.close()
 
 def update_row_for_conversation(target_conv_id: str, row: dict):
-    """Update existing row; keep earliest first_seen_utc & preserve initiator_email if present."""
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute("""
@@ -630,9 +590,7 @@ def update_row_for_conversation(target_conv_id: str, row: dict):
     con.commit()
     con.close()
 
-# ------------------------
-# Part Number extraction
-# ------------------------
+# [PART NUMBER EXTRACTION]
 PN_PATTERNS = [
     r'\bP\s*/?\s*N\s*(?:No\.?|#)?\s*[:\-]?\s*([A-Za-z0-9\-_\.\/]{5,25})',
     r'\b(Part|Item|SKU)\s*(?:No\.?|Number|#)?\s*[:\-]?\s*([A-Za-z0-9\-_\.\/]{5,25})',
@@ -667,19 +625,12 @@ def normalize_pn(s: str) -> str:
     return re.sub(r"[^A-Z0-9\-\_\.\/]", "", s)
 
 def _alnum(s: str) -> str:
-    """Uppercase and strip to only A–Z0–9 for containment checks."""
     return re.sub(r'[^A-Z0-9]', '', (s or '').upper())
 
 def extract_pn_candidates(subject: str, latest_reply: str):
-    """
-    Return (master_hit, fallback, hay_raw, hay_alnum)
-      - master_hit: first regex PN that IS in the master list
-      - fallback:   first regex PN that is valid but NOT in master
-    """
     hay = "  ".join([(subject or ""), (latest_reply or "")])
     master_hit = None
     fallback = None
-
     hits = []
     for pat in PN_PATTERNS:
         for m in re.finditer(pat, hay, flags=re.I):
@@ -687,18 +638,16 @@ def extract_pn_candidates(subject: str, latest_reply: str):
             token = (g or "").strip().strip('.,;:)]}')
             if token and is_valid_pn_basic(token):
                 hits.append((token, normalize_pn(token)))
-
     for token, norm in hits:
         if PN_MASTER_SET and norm in PN_MASTER_SET:
             master_hit = master_hit or token
         else:
             fallback = fallback or token
-
     return master_hit, fallback, hay, _alnum(hay)
 
 def load_master_pns(path: str) -> set:
     if not os.path.exists(path):
-        print(f"[WARN] PN master file not found at {path}. PN will be validated only by format.")
+        print(f"[WARN] PN master file not found at {path}")
         return set()
     try:
         if path.lower().endswith((".xlsx", ".xls")):
@@ -708,9 +657,8 @@ def load_master_pns(path: str) -> set:
         else:
             df = pd.read_excel(path, engine="openpyxl")
     except Exception as e:
-        print(f"[WARN] Failed to load PN master file: {e}. PN will be validated only by format.")
+        print(f"[WARN] Failed to load PN master file: {e}")
         return set()
-
     cols = [c for c in df.columns if str(c).strip().lower() in {"partnumber", "pn", "part", "item", "sku"}]
     col = cols[0] if cols else df.columns[0]
     values = (
@@ -723,9 +671,7 @@ def load_master_pns(path: str) -> set:
 
 PN_MASTER_SET = load_master_pns(PN_MASTER_PATH)
 
-# ====================
-# SQLite persistence
-# ====================
+# [DATABASE INIT AND UPSERT]
 def init_db():
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
@@ -794,72 +740,47 @@ def fetch_all_rows():
     return df
 
 def _safe_write_excel(write_fn, target_path: str, retries: int = 3, sleep_s: float = 1.2):
-    """
-    Calls write_fn(path) to create the workbook, writing to a temp file first.
-    If the target is locked (e.g., open in Excel), retries; finally falls back
-    to a timestamped filename so the run still produces a file.
-    """
     target_dir = os.path.dirname(os.path.abspath(target_path))
     base, ext = os.path.splitext(os.path.basename(target_path))
     tmp_fd, tmp_path = tempfile.mkstemp(prefix=base + "_tmp_", suffix=ext, dir=target_dir)
     os.close(tmp_fd)
-
     last_err = None
     for attempt in range(1, retries + 1):
         try:
-            write_fn(tmp_path)                 # write workbook to temp file
-            os.replace(tmp_path, target_path)  # atomic replace
+            write_fn(tmp_path)
+            os.replace(tmp_path, target_path)
             print(f"[OK] Excel written: {target_path}")
             return target_path
         except PermissionError as e:
             last_err = e
             if attempt < retries:
-                print(f"[WARN] Excel locked: {target_path} (attempt {attempt}/{retries}). Retrying in {sleep_s}s...")
+                print(f"[WARN] Excel locked (attempt {attempt}/{retries}). Retrying...")
                 time.sleep(sleep_s)
             else:
-                print(f"[ERROR] Could not overwrite locked file: {target_path}. Writing fallback copy...")
+                print(f"[ERROR] Could not overwrite locked file: {target_path}")
         except Exception as e:
             last_err = e
             try: os.remove(tmp_path)
             except: pass
             raise
-
-    # Fallback to a timestamped copy if still locked
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     fallback_path = os.path.join(target_dir, f"{base}_{ts}{ext}")
     write_fn(fallback_path)
     print(f"[OK] Excel written (fallback): {fallback_path}")
-    if last_err:
-        print(f"[NOTE] Original error: {last_err}")
     return fallback_path
 
-# ================
-# Excel exporting - TWO-WAY SYNC VERSION
-# ================
 def export_to_excel():
-    """
-    Export Excel based on CURRENT database state (includes dashboard edits).
-    This ensures Excel always reflects what user sees in dashboard.
-    """
     df = fetch_all_rows()
     if df.empty:
         print("[INFO] No rows to export.")
         return
-
-    # Keep only the latest row per case_key (safety net in case of old duplicates)
     if "case_key" in df.columns and "received_utc" in df.columns:
         df = df.sort_values("received_utc").drop_duplicates(subset=["case_key"], keep="last")
-
-    # Build ET date from first_seen_utc (complaint start)
     def _to_et_naive_wrapper(x):
         return to_et_naive(x) if pd.notna(x) and str(x).strip() else None
-
     df["__first_et"] = df["first_seen_utc"].apply(_to_et_naive_wrapper)
     df["Date (ET)"] = df["__first_et"]
-
-    # *** SORT BY DATE: Most recent first (descending order) ***
     df = df.sort_values("__first_et", ascending=False, na_position="last")
-
     colmap = {
         "initiator_email": "Initiated By",
         "part_number": "P/N",
@@ -868,43 +789,32 @@ def export_to_excel():
         "subject": "Subject",
         "thread_url": "Link",
     }
-
     base_cols = ["Date (ET)"] + list(colmap.keys())
     base_cols = [c for c in base_cols if c in df.columns]
     df_out = df[base_cols].rename(columns=colmap)
-
-    # Optional manual columns
     if "Category_Final" not in df_out.columns:
         if "Category" in df_out.columns:
             df_out.insert(df_out.columns.get_loc("Category") + 1, "Category_Final", "")
         else:
             df_out["Category_Final"] = ""
-    
-    # Add Notes column after Subject
     if "Notes" not in df_out.columns:
         if "Subject" in df_out.columns:
             df_out.insert(df_out.columns.get_loc("Subject") + 1, "Notes", "")
         else:
             df_out["Notes"] = ""
-
-    # *** ADD CUSTOM COLUMNS FROM DATABASE ***
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
     cur.execute("SELECT column_name FROM custom_columns")
     custom_cols = [row[0] for row in cur.fetchall()]
     con.close()
-    
     for col in custom_cols:
         if col in df.columns and col not in df_out.columns:
             df_out[col] = df[col]
-
-    # Store URLs separately and create HYPERLINK formula
     if "Link" in df_out.columns:
         df_out["_url"] = df_out["Link"].copy()
         df_out["Link"] = df_out["_url"].apply(
             lambda u: f'=HYPERLINK("{str(u).strip()}", "Open")' if pd.notna(u) and str(u).strip() else ""
         )
-
     desired = [
         "Date (ET)",
         "Initiated By",
@@ -915,27 +825,20 @@ def export_to_excel():
         "Notes",
         "Link",
     ] + custom_cols
-    
     existing = [c for c in desired if c in df_out.columns]
-    
     if "_url" in df_out.columns:
         df_out = df_out.drop(columns=["_url"])
-    
     df_out = df_out[existing]
-
     def _write(path):
         with pd.ExcelWriter(path, engine="openpyxl") as writer:
             sheet = "Complaints"
             df_out.to_excel(writer, sheet_name=sheet, index=False)
-
             from openpyxl.utils import get_column_letter
             from openpyxl.worksheet.table import Table, TableStyleInfo
             from openpyxl.styles import Alignment, Font
             wb = writer.book
             ws = wb[sheet]
-
             ws.freeze_panes = "A2"
-
             last_col = get_column_letter(ws.max_column)
             last_row = ws.max_row
             tbl = Table(displayName="ComplaintTable", ref=f"A1:{last_col}{last_row}")
@@ -945,20 +848,16 @@ def export_to_excel():
                 showRowStripes=True, showColumnStripes=False
             )
             ws.add_table(tbl)
-
             if "Summary" in df_out.columns:
                 cidx = df_out.columns.get_loc("Summary") + 1
                 for r in range(2, ws.max_row + 1):
                     ws.cell(row=r, column=cidx).alignment = Alignment(wrap_text=True, vertical="top")
-
             if "Date (ET)" in df_out.columns:
                 didx = df_out.columns.get_loc("Date (ET)") + 1
                 for r in range(2, ws.max_row + 1):
                     ws.cell(row=r, column=didx).number_format = "mm/dd/yyyy"
-
             for c in range(1, ws.max_column + 1):
                 ws.cell(row=1, column=c).font = Font(bold=True)
-
             target_widths = {
                 "Date (ET)": 12,
                 "Initiated By": 30,
@@ -971,12 +870,9 @@ def export_to_excel():
             }
             for idx, name in enumerate(df_out.columns, start=1):
                 ws.column_dimensions[get_column_letter(idx)].width = target_widths.get(name, 24)
-
     _safe_write_excel(_write, EXCEL_PATH)
 
-# ======================
-# Microsoft Graph fetch
-# ======================
+# [MICROSOFT GRAPH]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 def graph_headers(token: str):
@@ -991,14 +887,12 @@ def fetch_messages_since(start_iso: str, mailbox: str = MAILBOX, page_size: int 
         base = f"{GRAPH_BASE}/users/{mailbox}/messages"
     else:
         base = f"{GRAPH_BASE}/me/messages"
-
     params = {
         "$top": page_size,
         "$orderby": "receivedDateTime asc",
         "$filter": f"receivedDateTime ge {start_iso}",
         "$select": "id,conversationId,receivedDateTime,subject,from,body,webLink,bodyPreview,internetMessageId"
     }
-
     url = f"{base}?{urlencode(params)}"
     while True:
         resp = requests.get(url, headers=graph_headers(token))
@@ -1015,7 +909,6 @@ def fetch_messages_since(start_iso: str, mailbox: str = MAILBOX, page_size: int 
             break
         url = next_link
 
-# One-shot query: earliest message in a conversation (for first_seen & initiator)
 def fetch_earliest_in_conversation(conversation_id: str, mailbox: str = MAILBOX):
     token = get_token()
     if mailbox and mailbox != "me":
@@ -1038,12 +931,10 @@ def fetch_earliest_in_conversation(conversation_id: str, mailbox: str = MAILBOX)
     vals = resp.json().get("value", [])
     return vals[0] if vals else None
 
-# ======================
-# Gemini (JSON-only) call
-# ======================
+# [GEMINI]
 def gemini_client():
     if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not set in .env")
+        raise RuntimeError("GEMINI_API_KEY not set")
     print("[CONFIG] Loaded GEMINI_API_KEY:", _mask_key(GEMINI_API_KEY))
     if not _gemini_preflight(genai, GEMINI_API_KEY, "gemini-2.0-flash"):
         raise SystemExit(1)
@@ -1099,10 +990,10 @@ def gemini_extract(model, subject_clean: str, from_email: str, latest_reply: str
             last_exc = e
             if attempt < retries:
                 sleep_for = backoff ** (attempt - 1)
-                print(f"[WARN] Gemini call failed (attempt {attempt}/{retries}): {e}. Retrying in {sleep_for:.1f}s...")
+                print(f"[WARN] Gemini call failed (attempt {attempt}/{retries}): {e}")
                 time.sleep(sleep_for)
             else:
-                print(f"[ERROR] Gemini call failed after {retries} attempts: {e}")
+                print(f"[ERROR] Gemini failed after {retries} attempts: {e}")
                 break
     return {"is_complaint": False, "summary": "", "category_suggested": "Other", "case_key": "", "part_number": ""}
 
@@ -1115,9 +1006,7 @@ CATEGORIES = [
     "Supplier/SCAR","Damage/Transit","Missing Parts","Other"
 ]
 
-# ==========
-# Main run
-# ==========
+# [MAIN PROCESS FUNCTION]
 def process(override_start_date=None):
     init_db()
     checked = 0
@@ -1126,29 +1015,26 @@ def process(override_start_date=None):
     filtered_out = 0
     unchanged = 0
     updates_log = []
-
-    # Build earliest & latest message per conversation
     latest_msg_by_conv = {}
     first_msg_by_conv = {}
+    
     print("[INFO] Fetching messages from Graph...")
     start_iso = override_start_date or START_DATE
     for msg in fetch_messages_since(start_iso, MAILBOX):
         checked += 1
         conv_id = msg.get("conversationId")
-        rdt = msg.get("receivedDateTime")  # ISO8601 UTC
+        rdt = msg.get("receivedDateTime")
         if not conv_id or not rdt:
             continue
-        # earliest: first time we see this conversation in ascending order
         if conv_id not in first_msg_by_conv:
             first_msg_by_conv[conv_id] = msg
-        # latest: overwrite if newer
         prev = latest_msg_by_conv.get(conv_id)
         if (not prev) or (rdt > prev.get("receivedDateTime", "")):
             latest_msg_by_conv[conv_id] = msg
-
+    
     print(f"[INFO] Checked {checked} messages. Found {len(latest_msg_by_conv)} unique threads.")
     model = gemini_client()
-
+    
     for conv_id, msg in latest_msg_by_conv.items():
         subject_raw = msg.get("subject") or ""
         subject_clean = clean_subject(subject_raw)
@@ -1159,48 +1045,40 @@ def process(override_start_date=None):
         content_type = body.get("contentType") or "text"
         body_plain = strip_html(body_content) if content_type.lower() == "html" else body_content
         latest_reply = trim_to_latest_reply(body_plain)
-
-        # Tail text (signature/quoted/history after latest reply)
         tail_text = body_plain[len(latest_reply):].strip() if len(body_plain) > len(latest_reply) else ""
-
-        # Existing by conversation?
+        
         existing_by_conv = get_by_conversation_id(conv_id)
         if existing_by_conv:
             existing_rdt = existing_by_conv[1] or ""
             if existing_rdt and existing_rdt >= rdt:
                 unchanged += 1
-                continue  # nothing new in this thread
-
-        # Stage 1: heuristic noise filter
+                continue
+        
         if is_noise_email(subject_clean, sender_email, latest_reply):
             if existing_by_conv:
                 touch_conversation(conv_id, rdt)
             filtered_out += 1
             continue
-
-        # Stage 2: Gemini (must be complaint)
+        
         llm_out = gemini_extract(model, subject_clean, sender_email, body_plain)
         if not llm_out.get("is_complaint", False):
             if existing_by_conv:
                 touch_conversation(conv_id, rdt)
             filtered_out += 1
             continue
-
-        # Compose fields
+        
         summary = tighten_summary(llm_out.get("summary", ""))
         cat = llm_out.get("category_suggested", "Other")
         category_suggested = cat if cat in CATEGORIES else "Other"
-
-        # PN candidates
+        
         pn_master, pn_fallback, _hay_raw1, hay_alnum1 = extract_pn_candidates(subject_clean, latest_reply)
         pn_master2 = pn_fallback2 = None
         hay_alnum2 = ""
         if not pn_master and not pn_fallback and tail_text:
             pn_master2, pn_fallback2, _hay_raw2, hay_alnum2 = extract_pn_candidates("", tail_text)
-            hay_alnum2 = hay_alnum2 or ""
-
+        
         pn_final = pn_master or pn_master2 or pn_fallback or pn_fallback2
-
+        
         if not pn_final:
             llm_pn = llm_out.get("part_number")
             if llm_pn and is_valid_pn_basic(llm_pn):
@@ -1208,11 +1086,10 @@ def process(override_start_date=None):
                 alnum_llm = _alnum(llm_pn)
                 if (PN_MASTER_SET and llm_norm in PN_MASTER_SET) or (alnum_llm in (hay_alnum1 or "") or alnum_llm in (hay_alnum2 or "")):
                     pn_final = llm_pn
-
+        
         if not pn_final:
             pn_final = MISSING_PN
-
-        # Choose origin precedence
+        
         anywhere_iso = extract_earliest_datetime_anywhere(body_plain)
         helper_iso, helper_sender = compute_first_seen_initiator(
             conversation_id=conv_id,
@@ -1220,13 +1097,11 @@ def process(override_start_date=None):
             fallback_sender=sender_email,
             mailbox=MAILBOX,
         )
-
-        # Pick the earliest real timestamp
+        
         first_seen_utc = _min_iso(anywhere_iso, helper_iso, rdt)
         initiator_email = helper_sender or sender_email
         first_seen_utc = first_seen_utc or rdt
-
-        # Canonical case key
+        
         domain = (sender_email or "").split("@")[-1]
         pn_norm = normalize_pn(pn_final)
         case_key = canonical_case_key(
@@ -1235,10 +1110,9 @@ def process(override_start_date=None):
             subject=subject_clean,
             text_for_ids=f"{latest_reply}\n{summary}"
         )
-
+        
         thread_url = msg.get("webLink") or ""
-
-        # Optional: for brand-new tracked threads, query Graph once for earliest and merge if earlier
+        
         if not existing_by_conv:
             try:
                 earliest = fetch_earliest_in_conversation(conv_id)
@@ -1251,14 +1125,14 @@ def process(override_start_date=None):
                             or initiator_email
                         )
             except Exception:
-                pass  # non-fatal
-
+                pass
+        
         row = {
             "conversation_id": conv_id,
             "received_utc": rdt,
             "from_email": sender_email,
             "subject": subject_clean,
-            "jo_number": None,  # legacy
+            "jo_number": None,
             "part_number": pn_final,
             "category": category_suggested,
             "summary": summary,
@@ -1267,10 +1141,9 @@ def process(override_start_date=None):
             "first_seen_utc": first_seen_utc,
             "initiator_email": initiator_email,
         }
-
-        # Deduplicate across conversations by case_key
+        
         existing_by_case = get_by_case_key(case_key)
-
+        
         if existing_by_conv:
             upsert_row(row)
             updated_threads += 1
@@ -1279,7 +1152,6 @@ def process(override_start_date=None):
                 updates_log.append(f"Updated thread (PN captured): {subject_clean} (PN: {pn_final})")
             else:
                 updates_log.append(f"Updated thread: {subject_clean} (PN: {pn_final})")
-
         elif existing_by_case:
             target_conv, target_rdt, target_pn = existing_by_case
             if (target_rdt or "") >= rdt:
@@ -1289,16 +1161,14 @@ def process(override_start_date=None):
             updated_threads += 1
             prev_pn = (target_pn or "").strip()
             if prev_pn == MISSING_PN and pn_final != MISSING_PN:
-                updates_log.append(f"Merged duplicate into existing case (PN captured): {subject_clean} → {case_key} (PN: {pn_final})")
+                updates_log.append(f"Merged duplicate (PN captured): {subject_clean} → {case_key}")
             else:
-                updates_log.append(f"Merged duplicate into existing case: {subject_clean} → {case_key} (PN: {pn_final})")
-
+                updates_log.append(f"Merged duplicate: {subject_clean} → {case_key}")
         else:
             upsert_row(row)
             new_threads += 1
             updates_log.append(f"Added new case: {subject_clean} (PN: {pn_final})")
-
-    # Create summary dict for dashboard popup
+    
     summary = {
         "new": new_threads,
         "updated": updated_threads,
@@ -1308,45 +1178,43 @@ def process(override_start_date=None):
         "excel_written": (new_threads > 0 or updated_threads > 0),
         "updates_log": updates_log,
     }
-
-    # Only write Excel if needed
+    
     if summary["excel_written"]:
         export_to_excel()
-
+    
     update_start_date_env()
-
+    
     return summary
 
 def update_start_date_env():
-    """Update START_DATE in .env to now (UTC)."""
-    env_path = os.path.join(BASE_DIR, ".env")
+    """Update START_DATE in .env or session state"""
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-    lines = []
+    
+    # Try to update .env file if it exists (local development)
+    env_path = os.path.join(BASE_DIR, ".env")
     if os.path.exists(env_path):
+        lines = []
         with open(env_path, "r") as f:
             lines = f.readlines()
-
-    # Rewrite START_DATE= line
-    found = False
-    new_lines = []
-    for line in lines:
-        if line.startswith("START_DATE="):
+        found = False
+        new_lines = []
+        for line in lines:
+            if line.startswith("START_DATE="):
+                new_lines.append(f"START_DATE={now_iso}\n")
+                found = True
+            else:
+                new_lines.append(line)
+        if not found:
             new_lines.append(f"START_DATE={now_iso}\n")
-            found = True
-        else:
-            new_lines.append(line)
+        with open(env_path, "w") as f:
+            f.writelines(new_lines)
+        print(f"[INFO] START_DATE updated to {now_iso}")
+    else:
+        # For cloud deployment, just log it
+        print(f"[INFO] Would update START_DATE to {now_iso} (file not writable)")
 
-    # If it wasn't there, append it
-    if not found:
-        new_lines.append(f"START_DATE={now_iso}\n")
-
-    # Write file back
-    with open(env_path, "w") as f:
-        f.writelines(new_lines)
-
-    print(f"[INFO] START_DATE updated to {now_iso}")
-
+# REMOVED: All Tkinter functions (update_complaint_log, show_success_popup)
+# These are replaced by Streamlit UI in streamlit_app.py
 
 if __name__ == "__main__":
     t0 = time.time()
@@ -1358,38 +1226,3 @@ if __name__ == "__main__":
     finally:
         dt = time.time() - t0
         print(f"[DONE] Elapsed: {dt:.1f}s")
-
-from tkinter import messagebox, Tk
-
-def update_complaint_log(
-    df: pd.DataFrame,
-    new_count: int,
-    updated_count: int,
-    filtered_out_count: int,
-    unchanged_count: int,
-    total_checked: int
-):
-    print(f"\n=== Complaints Log Updated ===")
-    print(f"New: {new_count} | Updated: {updated_count} | Filtered out: {filtered_out_count} | Unchanged: {unchanged_count} | Total checked: {total_checked}")
-
-import tkinter as tk
-from tkinter import messagebox
-
-def show_success_popup(new_count, updated_count, filtered_out_count, unchanged_count, total_checked):
-    message = f"Complaints updated successfully.\n\n"
-    message += f"New: {new_count} | Updated: {updated_count} | Filtered out: {filtered_out_count} | "
-    message += f"Unchanged: {unchanged_count} | Total checked: {total_checked}"
-
-    # Create a Tkinter root window and hide it
-    root = tk.Tk()
-    root.withdraw()  # Hide the root window
-
-    # Show message box
-    messagebox.showinfo("Update Complete", message)
-
-    # Ensure the script pauses until user closes the popup
-    root.mainloop()
-
-
-
-
