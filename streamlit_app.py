@@ -17,6 +17,8 @@ import sqlite3
 import threading
 from datetime import datetime
 from typing import Dict, List, Optional
+from io import StringIO
+from contextlib import redirect_stdout
 
 # Third-party imports
 import streamlit as st
@@ -221,6 +223,8 @@ if 'custom_columns' not in st.session_state:
     st.session_state.custom_columns = []
 if 'edit_mode' not in st.session_state:
     st.session_state.edit_mode = False
+if 'sync_logs' not in st.session_state:
+    st.session_state.sync_logs = []
 
 # ==========================================
 # Helper Functions
@@ -479,16 +483,39 @@ def generate_excel_bytes() -> bytes:
     return buffer.getvalue()
 
 def run_sync_process():
-    """Run the email sync process in background"""
+    """Run the email sync process in background and capture logs"""
     try:
         st.session_state.sync_running = True
-        summary = process()
+
+        # Capture stdout to log
+        log_capture = StringIO()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Add header to logs
+        header_msg = f"\n{'='*60}\n[{timestamp}] Starting Email Sync Process\n{'='*60}\n"
+        st.session_state.sync_logs.append(header_msg)
+
+        # Redirect stdout and capture
+        with redirect_stdout(log_capture):
+            summary = process()
+
+        # Get captured output
+        log_output = log_capture.getvalue()
+        if log_output:
+            st.session_state.sync_logs.append(log_output)
+
+        # Add completion message
+        completion_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sync completed successfully\n"
+        st.session_state.sync_logs.append(completion_msg)
+
         st.session_state.last_sync = datetime.now()
         st.session_state.sync_summary = summary
         st.session_state.df = load_data()
         st.session_state.sync_running = False
         return summary
     except Exception as e:
+        error_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR: {str(e)}\n"
+        st.session_state.sync_logs.append(error_msg)
         st.session_state.sync_running = False
         raise e
 
@@ -741,7 +768,7 @@ else:
     # ==========================================
     # Tabs for Different Views
     # ==========================================
-    tab1, tab2, tab3 = st.tabs(["Data Table (Editable)", "Analytics", "Category Breakdown"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Data Table (Editable)", "Analytics", "Category Breakdown", "System Logs"])
     
     with tab1:
         st.subheader("Complaint Records")
@@ -1007,7 +1034,72 @@ else:
                     st.info("No part numbers found for this category")
         else:
             st.info("No category information available")
-    
+
+    with tab4:
+        st.subheader("System Logs - Email Sync Process")
+        st.info("Real-time logs from email sync operations. Logs appear when you run 'Run Email Sync'.")
+
+        # Controls
+        col1, col2, col3 = st.columns([1, 1, 3])
+        with col1:
+            if st.button("Clear Logs", type="secondary"):
+                st.session_state.sync_logs = []
+                st.rerun()
+        with col2:
+            auto_scroll = st.checkbox("Auto-scroll", value=True)
+
+        # Display logs
+        if st.session_state.sync_logs:
+            # Combine all logs
+            all_logs = "".join(st.session_state.sync_logs)
+
+            # Show log count
+            log_count = len(st.session_state.sync_logs)
+            st.caption(f"Total log entries: {log_count}")
+
+            # Display in a code block with terminal styling
+            st.markdown("""
+            <style>
+            .log-terminal {
+                background-color: #0D1117;
+                color: #C9D1D9;
+                padding: 1rem;
+                border-radius: 6px;
+                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                font-size: 0.85rem;
+                max-height: 600px;
+                overflow-y: auto;
+                border: 1px solid #30363D;
+            }
+            .log-terminal pre {
+                margin: 0;
+                color: #C9D1D9;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+
+            # Show logs in terminal-style container
+            st.markdown(f'<div class="log-terminal"><pre>{all_logs}</pre></div>', unsafe_allow_html=True)
+
+            # Download logs button
+            st.download_button(
+                label="Download Logs",
+                data=all_logs,
+                file_name=f"sync_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+                use_container_width=False
+            )
+        else:
+            st.info("No logs yet. Click 'Run Email Sync' in the sidebar to generate logs.")
+            st.markdown("""
+            **What you'll see here:**
+            - Email sync start/completion timestamps
+            - Messages fetched from Microsoft Graph
+            - Gemini AI processing status
+            - Database update operations
+            - Error messages (if any)
+            - Sync summary statistics
+            """)
 
 # ==========================================
 # Footer
