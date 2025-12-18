@@ -71,7 +71,7 @@ def _mask_key(k: str) -> str:
         return "*" * (len(k) - 2) + k[-2:]
     return k[:4] + "..." + k[-4:]
 
-def _gemini_preflight(genai_mod, api_key: str, model_name: str = "gemini-3.0-flash") -> bool:
+def _gemini_preflight(genai_mod, api_key: str, model_name: str = "gemini-1.5-flash") -> bool:
     """Check if Gemini API key works"""
     try:
         genai_mod.configure(api_key=api_key)
@@ -867,11 +867,11 @@ def gemini_client():
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY not set")
     print("[CONFIG] Loaded GEMINI_API_KEY:", _mask_key(GEMINI_API_KEY))
-    if not _gemini_preflight(genai, GEMINI_API_KEY, "gemini-3.0-flash"):
+    if not _gemini_preflight(genai, GEMINI_API_KEY, "gemini-1.5-flash"):
         raise SystemExit(1)
     genai.configure(api_key=GEMINI_API_KEY)
     return genai.GenerativeModel(
-        model_name="gemini-3.0-flash",
+        model_name="gemini-1.5-flash",
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0,
