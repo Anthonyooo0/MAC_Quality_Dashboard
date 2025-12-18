@@ -715,10 +715,15 @@ with st.sidebar:
 
         # Show device code flow
         if "device_flow" not in st.session_state:
-            flow = app.initiate_device_flow(scopes=SCOPES)
-            if "user_code" in flow:
-                st.session_state.device_flow = flow
-                st.session_state.auth_started = time.time()
+            try:
+                flow = app.initiate_device_flow(scopes=SCOPES)
+                if "user_code" in flow:
+                    st.session_state.device_flow = flow
+                    st.session_state.auth_started = time.time()
+                else:
+                    st.error(f"Failed to get device code. Error: {flow.get('error_description', 'Unknown error')}")
+            except Exception as e:
+                st.error(f"Device flow initialization failed: {str(e)}")
 
         if "device_flow" in st.session_state:
             flow = st.session_state.device_flow
