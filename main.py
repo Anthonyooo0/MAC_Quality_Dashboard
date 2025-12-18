@@ -29,6 +29,8 @@ def base_dir():
 BASE_DIR = base_dir()
 
 # Load environment variables from Streamlit secrets (cloud) or .env (local)
+# PRIORITY: Streamlit secrets ALWAYS take precedence over .env
+CONFIG_SOURCE = None
 try:
     # Try Streamlit secrets first (for cloud deployment)
     GEMINI_API_KEY = st.secrets["credentials"]["GEMINI_API_KEY"]
@@ -38,8 +40,11 @@ try:
     MAILBOX = st.secrets["credentials"]["MAILBOX"]
     START_DATE = st.secrets["credentials"].get("START_DATE", "2025-01-01T00:00:00Z")
     PN_MASTER_PATH = st.secrets["credentials"].get("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
-except (KeyError, FileNotFoundError, AttributeError):
-    # Fall back to .env for local development
+    CONFIG_SOURCE = "Streamlit Cloud Secrets"
+    print(f"[CONFIG] ✓ Loaded from Streamlit Cloud Secrets")
+except (KeyError, FileNotFoundError, AttributeError) as e:
+    # Fall back to .env for local development only
+    print(f"[CONFIG] Streamlit secrets not found ({type(e).__name__}), falling back to .env file")
     try:
         from dotenv import load_dotenv
         load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -52,6 +57,15 @@ except (KeyError, FileNotFoundError, AttributeError):
     START_DATE = os.getenv("START_DATE", "2025-01-01T00:00:00Z")
     MAILBOX = os.getenv("MAILBOX", "me")
     PN_MASTER_PATH = os.getenv("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
+    CONFIG_SOURCE = "Local .env file"
+    print(f"[CONFIG] ✓ Loaded from local .env file")
+
+# Log which API key is being used (masked for security)
+if GEMINI_API_KEY:
+    masked_key = GEMINI_API_KEY[:8] + "..." + GEMINI_API_KEY[-4:] if len(GEMINI_API_KEY) > 12 else "***"
+    print(f"[CONFIG] Gemini API Key: {masked_key} (from {CONFIG_SOURCE})")
+else:
+    print(f"[CONFIG] ⚠️ WARNING: No Gemini API key found!")
 
 # Quiet down gRPC / absl noise BEFORE importing google-generativeai
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
