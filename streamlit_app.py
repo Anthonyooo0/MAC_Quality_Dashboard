@@ -736,23 +736,31 @@ with st.sidebar:
                 st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
             with col2:
                 if st.button("Check Authentication", use_container_width=True, type="primary", key="auth_check"):
-                    try:
-                        result = app.acquire_token_by_device_flow(flow)
-                        if "access_token" in result:
-                            st.session_state.access_token = result["access_token"]
-                            st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                            st.session_state.pop("device_flow", None)
-                            st.session_state.pop("auth_started", None)
-                            st.session_state.needs_auth = False
-                            st.success("Authentication successful!")
-                            st.rerun()
-                        else:
-                            if "pending" in result.get('error_description', '').lower():
-                                st.warning("Still waiting for sign-in. Try again in a moment.")
+                    with st.spinner("Checking authentication..."):
+                        try:
+                            st.info("Contacting Microsoft to verify sign-in...")
+                            result = app.acquire_token_by_device_flow(flow)
+                            st.info(f"Got response from Microsoft. Checking for access token...")
+
+                            if "access_token" in result:
+                                st.session_state.access_token = result["access_token"]
+                                st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                                st.session_state.pop("device_flow", None)
+                                st.session_state.pop("auth_started", None)
+                                st.session_state.needs_auth = False
+                                st.success("Authentication successful!")
+                                time.sleep(1)
+                                st.rerun()
                             else:
-                                st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
-                    except Exception as e:
-                        st.error(f"Authentication error: {str(e)}")
+                                if "pending" in result.get('error_description', '').lower():
+                                    st.warning("Still waiting for sign-in. Try again in a moment.")
+                                else:
+                                    st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
+                                    st.error(f"Full result: {result}")
+                        except Exception as e:
+                            st.error(f"Authentication error: {str(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
 
             # Show timeout
             if "auth_started" in st.session_state:
