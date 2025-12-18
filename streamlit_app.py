@@ -484,28 +484,55 @@ def generate_excel_bytes() -> bytes:
 
 def run_sync_process():
     """Run the email sync process in background and capture logs"""
+    import sys
+    import traceback
+
     try:
         st.session_state.sync_running = True
-
-        # Capture stdout to log
-        log_capture = StringIO()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Add header to logs
         header_msg = f"\n{'='*60}\n[{timestamp}] Starting Email Sync Process\n{'='*60}\n"
         st.session_state.sync_logs.append(header_msg)
 
-        # Redirect stdout and capture
-        with redirect_stdout(log_capture):
+        # Log: Starting process
+        st.session_state.sync_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] Initializing email sync...\n")
+
+        # Capture stdout and stderr
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = log_capture = StringIO()
+        sys.stderr = log_capture
+
+        try:
+            st.session_state.sync_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] Calling process() function...\n")
             summary = process()
+            st.session_state.sync_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] process() completed\n")
+        finally:
+            # Restore stdout/stderr
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
         # Get captured output
         log_output = log_capture.getvalue()
         if log_output:
+            st.session_state.sync_logs.append("\n--- Process Output ---\n")
             st.session_state.sync_logs.append(log_output)
+            st.session_state.sync_logs.append("\n--- End Output ---\n")
+        else:
+            st.session_state.sync_logs.append("[WARNING] No output captured from process()\n")
+
+        # Log summary details
+        if summary:
+            st.session_state.sync_logs.append(f"\n[{datetime.now().strftime('%H:%M:%S')}] Sync Summary:\n")
+            st.session_state.sync_logs.append(f"  - New complaints: {summary.get('new', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Updated: {summary.get('updated', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Filtered out: {summary.get('filtered_out', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Unchanged: {summary.get('unchanged', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Total checked: {summary.get('checked', 0)}\n")
 
         # Add completion message
-        completion_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sync completed successfully\n"
+        completion_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sync completed successfully\n{'='*60}\n"
         st.session_state.sync_logs.append(completion_msg)
 
         st.session_state.last_sync = datetime.now()
@@ -514,7 +541,10 @@ def run_sync_process():
         st.session_state.sync_running = False
         return summary
     except Exception as e:
+        # Detailed error logging
         error_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR: {str(e)}\n"
+        error_msg += f"Error type: {type(e).__name__}\n"
+        error_msg += f"Traceback:\n{traceback.format_exc()}\n"
         st.session_state.sync_logs.append(error_msg)
         st.session_state.sync_running = False
         raise e
