@@ -31,7 +31,7 @@ import webbrowser
 # Import from existing modules (all main imports consolidated)
 from main import (
     BASE_DIR, process, fetch_all_rows, EXCEL_PATH, DB_PATH,
-    to_et_naive, init_db, export_to_excel, app, SCOPES
+    to_et_naive, init_db, export_to_excel, get_msal_app, SCOPES
 )
 from prompts import CATEGORIES
 
@@ -691,20 +691,22 @@ with st.sidebar:
     if not has_valid_token or st.session_state.get('needs_auth', False):
         st.warning("Microsoft Authentication Required")
 
-        # Try silent authentication first
+        # Try silent authentication first (per-user)
         if not has_valid_token:
-            accounts = app.get_accounts()
+            msal_app = get_msal_app()  # Get session-specific MSAL app
+            accounts = msal_app.get_accounts()
             if accounts:
-                result = app.acquire_token_silent(SCOPES, account=accounts[0])
+                result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
                 if result and "access_token" in result:
                     st.session_state.access_token = result["access_token"]
                     st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
                     st.session_state.needs_auth = False
                     st.rerun()
 
-        # Show device code flow
+        # Show device code flow (per-user)
         if "device_flow" not in st.session_state:
-            flow = app.initiate_device_flow(scopes=SCOPES)
+            msal_app = get_msal_app()  # Get session-specific MSAL app
+            flow = msal_app.initiate_device_flow(scopes=SCOPES)
             if "user_code" in flow:
                 st.session_state.device_flow = flow
                 st.session_state.auth_started = time.time()
@@ -721,7 +723,8 @@ with st.sidebar:
             with col2:
                 if st.button("Check Authentication", use_container_width=True, type="primary", key="auth_check"):
                     try:
-                        result = app.acquire_token_by_device_flow(flow)
+                        msal_app = get_msal_app()  # Get session-specific MSAL app
+                        result = msal_app.acquire_token_by_device_flow(flow)
                         if "access_token" in result:
                             st.session_state.access_token = result["access_token"]
                             st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)

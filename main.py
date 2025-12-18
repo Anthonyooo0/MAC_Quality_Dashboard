@@ -124,7 +124,18 @@ MISSING_PN = "No part number provided"
 # =================
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["Mail.Read", "User.Read"]
-app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
+
+def get_msal_app():
+    """
+    Get MSAL app from session state (per-user authentication).
+    Each user session has its own MSAL app with isolated token cache.
+    """
+    if "msal_app" not in st.session_state:
+        st.session_state.msal_app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
+    return st.session_state.msal_app
+
+# Keep module-level app for backwards compatibility (not recommended for multi-user)
+app = None  # Will be None - use get_msal_app() instead
 
 # ====================
 # FIXED AUTHENTICATION FUNCTION
@@ -135,16 +146,18 @@ def get_token():
     """
     Get token from session state (authentication handled in streamlit_app.py sidebar).
     Returns token if valid, otherwise raises error.
+    Each user session has its own isolated token cache.
     """
     # Check if we have a valid token in session state
     if "access_token" in st.session_state and "token_expires_at" in st.session_state:
         if time.time() < st.session_state.token_expires_at:
             return st.session_state.access_token
 
-    # Try silent authentication with cached account
-    accounts = app.get_accounts()
+    # Try silent authentication with cached account (per-user)
+    msal_app = get_msal_app()  # Get session-specific MSAL app
+    accounts = msal_app.get_accounts()
     if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+        result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
         if result and "access_token" in result:
             st.session_state.access_token = result["access_token"]
             st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
