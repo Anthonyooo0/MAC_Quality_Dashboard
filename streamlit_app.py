@@ -115,9 +115,25 @@ st.markdown(f"""
         border: none;
         transition: all 0.2s ease;
     }}
-    
+
     .stButton>button:hover {{
         background-color: #1E3A8A;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(30, 58, 138, 0.3);
+    }}
+
+    /* Download Button - MAC Blue */
+    .stDownloadButton>button {{
+        background-color: {PRIMARY_COLOR} !important;
+        color: white !important;
+        border-radius: 6px;
+        font-weight: 600;
+        border: none;
+        transition: all 0.2s ease;
+    }}
+
+    .stDownloadButton>button:hover {{
+        background-color: #1E3A8A !important;
         transform: translateY(-1px);
         box-shadow: 0 4px 8px rgba(30, 58, 138, 0.3);
     }}
