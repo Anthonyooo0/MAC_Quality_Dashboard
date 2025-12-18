@@ -30,8 +30,8 @@ import webbrowser
 
 # Import from existing modules (all main imports consolidated)
 from main import (
-    BASE_DIR, process, fetch_all_rows, EXCEL_PATH, DB_PATH, 
-    to_et_naive, init_db, export_to_excel
+    BASE_DIR, process, fetch_all_rows, EXCEL_PATH, DB_PATH,
+    to_et_naive, init_db, export_to_excel, app, SCOPES
 )
 from prompts import CATEGORIES
 
@@ -610,40 +610,54 @@ with st.sidebar:
     
     # Sync button
     if st.button("Run Email Sync", use_container_width=True, type="primary"):
-        with st.spinner("Syncing emails..."):
-            try:
-                summary = run_sync_process()
-                st.success("Sync completed!")
-                st.balloons()
-                
-                # Show sync summary
-                with st.expander("Sync Summary", expanded=True):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("New", summary.get('new', 0))
-                        st.metric("Updated", summary.get('updated', 0))
-                    with col2:
-                        st.metric("Filtered", summary.get('filtered_out', 0))
-                        st.metric("Unchanged", summary.get('unchanged', 0))
-                    
-                    if summary.get('updates_log'):
-                        st.markdown("**Recent Updates:**")
-                        for log in summary['updates_log'][:5]:
-                            st.text(f"• {log}")
-            except Exception as e:
-                st.error(f"Sync failed: {str(e)}")
-                
-                # If authentication error, direct user to restart launcher
-                if "auth" in str(e).lower() or "token" in str(e).lower():
-                    st.warning("Authentication may have expired.")
-                    st.info("""
-                    **To re-authenticate:**
-                    1. Close this browser tab
-                    2. Double-click `Start_Dashboard.bat` again
-                    3. The launcher will handle re-authentication
-                    """)
-                else:
-                    st.info("If the issue persists, try restarting the dashboard using `Start_Dashboard.bat`")
+        # Check if we have authentication first
+        if "access_token" in st.session_state and "token_expires_at" in st.session_state:
+            if time.time() < st.session_state.token_expires_at:
+                # We have valid token, proceed with sync
+                with st.spinner("Syncing emails..."):
+                    try:
+                        summary = run_sync_process()
+                        st.success("Sync completed!")
+                        st.balloons()
+
+                        # Show sync summary
+                        with st.expander("Sync Summary", expanded=True):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("New", summary.get('new', 0))
+                                st.metric("Updated", summary.get('updated', 0))
+                            with col2:
+                                st.metric("Filtered", summary.get('filtered_out', 0))
+                                st.metric("Unchanged", summary.get('unchanged', 0))
+
+                            if summary.get('updates_log'):
+                                st.markdown("**Recent Updates:**")
+                                for log in summary['updates_log'][:5]:
+                                    st.text(f"• {log}")
+                    except Exception as e:
+                        st.error(f"Sync failed: {str(e)}")
+
+                        # If authentication error, direct user to restart launcher
+                        if "auth" in str(e).lower() or "token" in str(e).lower():
+                            st.warning("Authentication may have expired.")
+                            st.info("""
+                            **To re-authenticate:**
+                            1. Close this browser tab
+                            2. Double-click `Start_Dashboard.bat` again
+                            3. The launcher will handle re-authentication
+                            """)
+                        else:
+                            st.info("If the issue persists, try restarting the dashboard using `Start_Dashboard.bat`")
+            else:
+                # Token expired
+                st.warning("Authentication token expired. Please authenticate below.")
+                st.session_state.needs_auth = True
+                st.rerun()
+        else:
+            # No token at all
+            st.warning("Please authenticate with Microsoft first (see below).")
+            st.session_state.needs_auth = True
+            st.rerun()
     
     # Refresh button
     if st.button("Refresh Data", use_container_width=True):
@@ -664,7 +678,83 @@ with st.sidebar:
         st.caption("Click to download Excel with current dashboard data")
     except Exception as e:
         st.error(f"Failed to generate Excel: {e}")
-    
+
+    # Authentication UI (non-blocking)
+    st.markdown("---")
+
+    # Check authentication status
+    has_valid_token = False
+    if "access_token" in st.session_state and "token_expires_at" in st.session_state:
+        if time.time() < st.session_state.token_expires_at:
+            has_valid_token = True
+
+    if not has_valid_token or st.session_state.get('needs_auth', False):
+        st.warning("Microsoft Authentication Required")
+
+        # Try silent authentication first
+        if not has_valid_token:
+            accounts = app.get_accounts()
+            if accounts:
+                result = app.acquire_token_silent(SCOPES, account=accounts[0])
+                if result and "access_token" in result:
+                    st.session_state.access_token = result["access_token"]
+                    st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                    st.session_state.needs_auth = False
+                    st.rerun()
+
+        # Show device code flow
+        if "device_flow" not in st.session_state:
+            flow = app.initiate_device_flow(scopes=SCOPES)
+            if "user_code" in flow:
+                st.session_state.device_flow = flow
+                st.session_state.auth_started = time.time()
+
+        if "device_flow" in st.session_state:
+            flow = st.session_state.device_flow
+
+            st.info("To sync emails, authenticate with Microsoft:")
+            st.code(flow['user_code'], language=None)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
+            with col2:
+                if st.button("Check Authentication", use_container_width=True, type="primary", key="auth_check"):
+                    try:
+                        result = app.acquire_token_by_device_flow(flow)
+                        if "access_token" in result:
+                            st.session_state.access_token = result["access_token"]
+                            st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                            st.session_state.pop("device_flow", None)
+                            st.session_state.pop("auth_started", None)
+                            st.session_state.needs_auth = False
+                            st.success("Authentication successful!")
+                            st.rerun()
+                        else:
+                            if "pending" in result.get('error_description', '').lower():
+                                st.warning("Still waiting for sign-in. Try again in a moment.")
+                            else:
+                                st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
+                    except Exception as e:
+                        st.error(f"Authentication error: {str(e)}")
+
+            # Show timeout
+            if "auth_started" in st.session_state:
+                elapsed = time.time() - st.session_state.auth_started
+                remaining = max(0, 900 - elapsed)
+                if remaining > 0:
+                    minutes = int(remaining // 60)
+                    seconds = int(remaining % 60)
+                    st.caption(f"Code expires in {minutes}m {seconds}s")
+                else:
+                    if st.button("Get New Code", use_container_width=True):
+                        st.session_state.pop("device_flow", None)
+                        st.session_state.pop("auth_started", None)
+                        st.rerun()
+    else:
+        st.success("Authenticated")
+        st.caption("Ready to sync emails")
+
     st.markdown("---")
     st.header("Filters")
     
