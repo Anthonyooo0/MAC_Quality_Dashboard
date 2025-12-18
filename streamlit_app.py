@@ -12,6 +12,7 @@ if script_dir not in sys.path:
 # ===== END PATH FIX =====
 
 # Standard library imports
+import sys
 import time
 import sqlite3
 import threading
@@ -482,6 +483,20 @@ def generate_excel_bytes() -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
+class StreamlitLogger:
+    """Custom logger that writes to both console and Streamlit session state"""
+    def __init__(self, log_list):
+        self.log_list = log_list
+        self.terminal = sys.stdout
+
+    def write(self, message):
+        if message and message.strip():
+            self.log_list.append(message)
+            self.terminal.write(message)
+
+    def flush(self):
+        self.terminal.flush()
+
 def run_sync_process():
     """Run the email sync process in background and capture logs"""
     import sys
@@ -496,31 +511,34 @@ def run_sync_process():
         st.session_state.sync_logs.append(header_msg)
 
         # Log: Starting process
-        st.session_state.sync_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] Initializing email sync...\n")
+        log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Initializing email sync...\n"
+        st.session_state.sync_logs.append(log_msg)
 
-        # Capture stdout and stderr
+        # Replace stdout with custom logger
         old_stdout = sys.stdout
         old_stderr = sys.stderr
-        sys.stdout = log_capture = StringIO()
-        sys.stderr = log_capture
+
+        # Create custom logger that writes to both console and session state
+        logger = StreamlitLogger(st.session_state.sync_logs)
+        sys.stdout = logger
+        sys.stderr = logger
 
         try:
-            st.session_state.sync_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] Calling process() function...\n")
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Calling process() function...\n"
+            st.session_state.sync_logs.append(log_msg)
+
             summary = process()
-            st.session_state.sync_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] process() completed\n")
+
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] process() returned successfully\n"
+            st.session_state.sync_logs.append(log_msg)
+        except Exception as proc_error:
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] ERROR in process(): {str(proc_error)}\n"
+            st.session_state.sync_logs.append(log_msg)
+            raise
         finally:
             # Restore stdout/stderr
             sys.stdout = old_stdout
             sys.stderr = old_stderr
-
-        # Get captured output
-        log_output = log_capture.getvalue()
-        if log_output:
-            st.session_state.sync_logs.append("\n--- Process Output ---\n")
-            st.session_state.sync_logs.append(log_output)
-            st.session_state.sync_logs.append("\n--- End Output ---\n")
-        else:
-            st.session_state.sync_logs.append("[WARNING] No output captured from process()\n")
 
         # Log summary details
         if summary:
@@ -530,6 +548,8 @@ def run_sync_process():
             st.session_state.sync_logs.append(f"  - Filtered out: {summary.get('filtered_out', 0)}\n")
             st.session_state.sync_logs.append(f"  - Unchanged: {summary.get('unchanged', 0)}\n")
             st.session_state.sync_logs.append(f"  - Total checked: {summary.get('checked', 0)}\n")
+        else:
+            st.session_state.sync_logs.append("[WARNING] process() returned None or empty summary\n")
 
         # Add completion message
         completion_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sync completed successfully\n{'='*60}\n"
@@ -542,7 +562,7 @@ def run_sync_process():
         return summary
     except Exception as e:
         # Detailed error logging
-        error_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ERROR: {str(e)}\n"
+        error_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] FATAL ERROR: {str(e)}\n"
         error_msg += f"Error type: {type(e).__name__}\n"
         error_msg += f"Traceback:\n{traceback.format_exc()}\n"
         st.session_state.sync_logs.append(error_msg)
