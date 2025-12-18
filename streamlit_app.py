@@ -561,14 +561,14 @@ with st.sidebar:
     try:
         excel_data = generate_excel_bytes()
         st.download_button(
-            label="📥 Download Excel",
+            label="Download Excel",
             data=excel_data,
             file_name=f"Complaint_Log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             type="primary"
         )
-        st.caption("💡 Click to download Excel with current dashboard data")
+        st.caption("Click to download Excel with current dashboard data")
     except Exception as e:
         st.error(f"Failed to generate Excel: {e}")
     
