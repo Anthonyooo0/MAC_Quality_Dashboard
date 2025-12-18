@@ -390,7 +390,7 @@ with st.sidebar:
     st.header("Controls")
     
     # Sync button
-    if st.button("Run Email Sync", width="stretch", type="primary"):
+    if st.button("Run Email Sync", use_container_width=True, type="primary"):
         with st.spinner("Syncing emails..."):
             try:
                 summary = run_sync_process()
@@ -427,22 +427,22 @@ with st.sidebar:
                     st.info("If the issue persists, try restarting the dashboard using `Start_Dashboard.bat`")
     
     # Refresh button
-    if st.button("Refresh Data", width="stretch"):
+    if st.button("Refresh Data", use_container_width=True):
         st.session_state.df = load_data()
         st.rerun()
     
     # Export buttons
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Save to Excel", width="stretch"):
+        if st.button("Save to Excel", use_container_width=True):
             try:
                 export_to_excel()
                 st.success("Excel saved!")
             except Exception as e:
                 st.error(f"Export failed: {e}")
-    
+
     with col2:
-        if st.button("Open Excel", width="stretch"):
+        if st.button("Open Excel", use_container_width=True):
             try:
                 if os.path.exists(EXCEL_PATH):
                     webbrowser.open(EXCEL_PATH)
