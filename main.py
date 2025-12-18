@@ -1198,8 +1198,12 @@ def process(override_start_date=None):
 
 def update_start_date_env():
     """Update START_DATE in .env or session state"""
+    global START_DATE
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-    
+
+    # Update the in-memory variable FIRST (critical fix)
+    START_DATE = now_iso
+
     # Try to update .env file if it exists (local development)
     env_path = os.path.join(BASE_DIR, ".env")
     if os.path.exists(env_path):
@@ -1218,10 +1222,10 @@ def update_start_date_env():
             new_lines.append(f"START_DATE={now_iso}\n")
         with open(env_path, "w") as f:
             f.writelines(new_lines)
-        print(f"[INFO] START_DATE updated to {now_iso}")
+        print(f"[INFO] START_DATE updated to {now_iso} (in-memory and .env file)")
     else:
         # For cloud deployment, just log it
-        print(f"[INFO] Would update START_DATE to {now_iso} (file not writable)")
+        print(f"[INFO] START_DATE updated to {now_iso} (in-memory only, .env not writable)")
 
 # REMOVED: All Tkinter functions (update_complaint_log, show_success_popup)
 # These are replaced by Streamlit UI in streamlit_app.py
