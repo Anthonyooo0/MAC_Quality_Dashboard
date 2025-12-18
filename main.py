@@ -29,6 +29,7 @@ def base_dir():
 BASE_DIR = base_dir()
 
 # Load environment variables from Streamlit secrets (cloud) or .env (local)
+CONFIG_SOURCE = "unknown"
 try:
     # Try Streamlit secrets first (for cloud deployment)
     GEMINI_API_KEY = st.secrets["credentials"]["GEMINI_API_KEY"]
@@ -38,6 +39,7 @@ try:
     MAILBOX = st.secrets["credentials"]["MAILBOX"]
     START_DATE = st.secrets["credentials"].get("START_DATE", "2025-01-01T00:00:00Z")
     PN_MASTER_PATH = st.secrets["credentials"].get("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
+    CONFIG_SOURCE = "Streamlit Secrets"
 except (KeyError, FileNotFoundError, AttributeError):
     # Fall back to .env for local development
     try:
@@ -52,6 +54,7 @@ except (KeyError, FileNotFoundError, AttributeError):
     START_DATE = os.getenv("START_DATE", "2025-01-01T00:00:00Z")
     MAILBOX = os.getenv("MAILBOX", "me")
     PN_MASTER_PATH = os.getenv("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
+    CONFIG_SOURCE = ".env file"
 
 # Quiet down gRPC / absl noise BEFORE importing google-generativeai
 os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
@@ -865,10 +868,19 @@ def fetch_earliest_in_conversation(conversation_id: str, mailbox: str = MAILBOX)
 # [GEMINI]
 def gemini_client():
     if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not set")
-    print("[CONFIG] Loaded GEMINI_API_KEY:", _mask_key(GEMINI_API_KEY))
+        st.warning("⚠️ GEMINI_API_KEY not set. AI email processing disabled.")
+        return None
+
+    # Show debug info to user
+    key_preview = _mask_key(GEMINI_API_KEY)
+    st.info(f"🔑 Loading API key from: **{CONFIG_SOURCE}** (ends with: ...{GEMINI_API_KEY[-4:] if len(GEMINI_API_KEY) >= 4 else 'N/A'})")
+    print(f"[CONFIG] Loaded GEMINI_API_KEY from {CONFIG_SOURCE}:", key_preview)
+
     if not _gemini_preflight(genai, GEMINI_API_KEY, "gemini-3-flash-preview"):
-        raise SystemExit(1)
+        st.warning("⚠️ Gemini API unavailable. AI email processing disabled. Dashboard will still work for manual data entry.")
+        return None
+
+    st.success("✅ Gemini API connected successfully!")
     genai.configure(api_key=GEMINI_API_KEY)
     return genai.GenerativeModel(
         model_name="gemini-3-flash-preview",
