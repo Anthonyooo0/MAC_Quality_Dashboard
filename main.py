@@ -133,15 +133,14 @@ app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
 
 def get_token():
     """
-    Streamlit-compatible authentication using device code flow.
-    Shows the device code in the Streamlit UI with proper button layout.
-    Stores token in session state for reuse.
+    Get token from session state (authentication handled in streamlit_app.py sidebar).
+    Returns token if valid, otherwise raises error.
     """
-    # Check if we already have a valid token in session state
+    # Check if we have a valid token in session state
     if "access_token" in st.session_state and "token_expires_at" in st.session_state:
         if time.time() < st.session_state.token_expires_at:
             return st.session_state.access_token
-    
+
     # Try silent authentication with cached account
     accounts = app.get_accounts()
     if accounts:
@@ -150,87 +149,9 @@ def get_token():
             st.session_state.access_token = result["access_token"]
             st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
             return result["access_token"]
-    
-    # Need to show device code flow UI
-    if "device_flow" not in st.session_state:
-        # Start device code flow
-        flow = app.initiate_device_flow(scopes=SCOPES)
-        if "user_code" not in flow:
-            st.error(f"Device code flow error: {flow}")
-            st.stop()
-        
-        st.session_state.device_flow = flow
-        st.session_state.auth_started = time.time()
-    
-    flow = st.session_state.device_flow
-    
-    # Display authentication UI
-    st.warning("🔐 **Microsoft Authentication Required**")
-    
-    st.info("""
-    **To sync emails, you need to authenticate with Microsoft:**
-    
-    1. Click "Open Login Page" below
-    2. Enter the code shown
-    3. Sign in with your work account
-    4. Come back here and click "Check Authentication"
-    """)
-    
-    # Show the device code prominently
-    st.code(flow['user_code'], language=None)
-    
-    # Create buttons in a row - FIXED LAYOUT
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Open login page button with proper link
-        login_url = "https://microsoft.com/devicelogin"
-        st.link_button("🌐 Open Login Page", login_url, use_container_width=True)
-    
-    with col2:
-        # Check authentication button
-        if st.button("✅ Check Authentication", use_container_width=True, type="primary"):
-            with st.spinner("Verifying authentication..."):
-                try:
-                    result = app.acquire_token_by_device_flow(flow)
-                    
-                    if "access_token" in result:
-                        st.session_state.access_token = result["access_token"]
-                        st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                        st.session_state.pop("device_flow", None)
-                        st.session_state.pop("auth_started", None)
-                        st.success("✅ Authentication successful!")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        error_desc = result.get('error_description', 'Unknown error')
-                        if "pending" in error_desc.lower():
-                            st.warning("⏳ Still waiting for you to complete sign-in. Try again in a moment.")
-                        else:
-                            st.error(f"Authentication failed: {error_desc}")
-                            # Reset flow on actual failure
-                            st.session_state.pop("device_flow", None)
-                except Exception as e:
-                    st.error(f"Authentication error: {str(e)}")
-    
-    # Show timeout warning
-    if "auth_started" in st.session_state:
-        elapsed = time.time() - st.session_state.auth_started
-        remaining = max(0, 900 - elapsed)  # 15 minute timeout
-        
-        if remaining > 0:
-            minutes = int(remaining // 60)
-            seconds = int(remaining % 60)
-            st.caption(f"⏱️ Code expires in {minutes}m {seconds}s")
-        else:
-            st.error("⏰ Code expired. Click below to get a new code.")
-            if st.button("🔄 Get New Code", use_container_width=True):
-                st.session_state.pop("device_flow", None)
-                st.session_state.pop("auth_started", None)
-                st.rerun()
-    
-    # Stop execution until authenticated
-    st.stop()
+
+    # No valid token - authentication required
+    raise RuntimeError("Authentication required. Please authenticate in the sidebar.")
 
 SUBJECT_PREFIXES = ("re:", "fw:", "fwd:", "sv:", "答复:", "回复:", "aw:", "wg:", "r:")
 
