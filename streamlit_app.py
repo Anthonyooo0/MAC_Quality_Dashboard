@@ -215,16 +215,12 @@ st.markdown(f"""
 # Clear Authentication on Every Page Load
 # ==========================================
 # Force re-authentication on every page refresh
+# Only clear completed auth tokens, not in-progress device flow
 if 'access_token' in st.session_state:
     del st.session_state['access_token']
 if 'token_expires_at' in st.session_state:
     del st.session_state['token_expires_at']
-if 'device_flow' in st.session_state:
-    del st.session_state['device_flow']
-if 'auth_started' in st.session_state:
-    del st.session_state['auth_started']
-if 'needs_auth' in st.session_state:
-    del st.session_state['needs_auth']
+# Don't clear device_flow and auth_started - they're needed during auth process
 
 # ==========================================
 # Session State Initialization
