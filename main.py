@@ -131,30 +131,43 @@ app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
 
 # ====================
 # FIXED AUTHENTICATION FUNCTION
-# Replace the get_token() function in your main.py with this version
 # ====================
 
 def get_token():
     """
-    Get token from session state (authentication handled in streamlit_app.py sidebar).
-    Returns token if valid, otherwise raises error.
+    Get token with proper error handling and clear messaging.
+    This version properly handles the authentication state.
     """
-    # Check if we have a valid token in session state
+    # First check: Do we have a valid token in session state?
     if "access_token" in st.session_state and "token_expires_at" in st.session_state:
         if time.time() < st.session_state.token_expires_at:
+            print(f"[AUTH] Using cached token from session state")
             return st.session_state.access_token
-
-    # Try silent authentication with cached account
+        else:
+            print(f"[AUTH] Cached token expired, attempting refresh...")
+    
+    # Second check: Try to get token silently from MSAL cache
     accounts = app.get_accounts()
     if accounts:
+        print(f"[AUTH] Found {len(accounts)} cached account(s), attempting silent token acquisition...")
         result = app.acquire_token_silent(SCOPES, account=accounts[0])
         if result and "access_token" in result:
+            print(f"[AUTH] Successfully acquired token silently")
+            # Store in session state for future use
             st.session_state.access_token = result["access_token"]
             st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
             return result["access_token"]
-
-    # No valid token - authentication required
-    raise RuntimeError("Authentication required. Please authenticate in the sidebar.")
+        else:
+            print(f"[AUTH] Silent token acquisition failed: {result.get('error_description', 'Unknown error')}")
+    else:
+        print(f"[AUTH] No cached accounts found")
+    
+    # If we get here, we don't have a valid token
+    print(f"[AUTH] No valid token available - user needs to authenticate")
+    raise RuntimeError(
+        "Authentication required. Please complete the authentication in the sidebar first, "
+        "then click 'Run Email Sync' again."
+    )
 
 SUBJECT_PREFIXES = ("re:", "fw:", "fwd:", "sv:", "答复:", "回复:", "aw:", "wg:", "r:")
 
@@ -1159,9 +1172,6 @@ def update_start_date_env():
     else:
         # For cloud deployment, just log it
         print(f"[INFO] START_DATE updated to {now_iso} (in-memory only, .env not writable)")
-
-# REMOVED: All Tkinter functions (update_complaint_log, show_success_popup)
-# These are replaced by Streamlit UI in streamlit_app.py
 
 if __name__ == "__main__":
     t0 = time.time()
