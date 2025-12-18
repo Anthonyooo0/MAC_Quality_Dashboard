@@ -306,16 +306,16 @@ def load_data() -> pd.DataFrame:
     """Load and prepare data from database"""
     init_db()
     df = fetch_all_rows()
-    
+
     if df.empty:
         return df
-    
+
     # Add ET date column
     def to_et_wrapper(x):
         return to_et_naive(x) if pd.notna(x) and str(x).strip() else None
-    
+
     df["__first_et"] = df["first_seen_utc"].apply(to_et_wrapper) if "first_seen_utc" in df.columns else None
-    
+
     # Build display DataFrame
     display = pd.DataFrame()
     display["Date (ET)"] = df["__first_et"]
@@ -325,16 +325,142 @@ def load_data() -> pd.DataFrame:
     display["Summary"] = df.get("summary", "")
     display["Subject"] = df.get("subject", "")
     display["Link"] = df.get("thread_url", "")
-    
+
     # Add custom columns
     custom_cols = load_custom_columns()
     for col in custom_cols:
         display[col] = df.get(col, "")
-    
+
     # Store conversation_id for editing
     display["_conversation_id"] = df.get("conversation_id", "")
-    
+
     return display
+
+def generate_excel_bytes() -> bytes:
+    """Generate Excel file as bytes from current database data"""
+    from io import BytesIO
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+    from openpyxl.styles import Alignment, Font
+
+    # Fetch current data from database
+    df = fetch_all_rows()
+
+    if df.empty:
+        # Return empty Excel file
+        buffer = BytesIO()
+        pd.DataFrame({"Message": ["No data available"]}).to_excel(buffer, index=False, engine="openpyxl")
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    # Sort and deduplicate
+    if "case_key" in df.columns and "received_utc" in df.columns:
+        df = df.sort_values("received_utc").drop_duplicates(subset=["case_key"], keep="last")
+
+    def _to_et_naive_wrapper(x):
+        return to_et_naive(x) if pd.notna(x) and str(x).strip() else None
+
+    df["__first_et"] = df["first_seen_utc"].apply(_to_et_naive_wrapper)
+    df["Date (ET)"] = df["__first_et"]
+    df = df.sort_values("__first_et", ascending=False, na_position="last")
+
+    colmap = {
+        "initiator_email": "Initiated By",
+        "part_number": "P/N",
+        "summary": "Summary",
+        "category": "Category",
+        "subject": "Subject",
+        "thread_url": "Link",
+    }
+    base_cols = ["Date (ET)"] + list(colmap.keys())
+    base_cols = [c for c in base_cols if c in df.columns]
+    df_out = df[base_cols].rename(columns=colmap)
+
+    if "Category_Final" not in df_out.columns:
+        if "Category" in df_out.columns:
+            df_out.insert(df_out.columns.get_loc("Category") + 1, "Category_Final", "")
+        else:
+            df_out["Category_Final"] = ""
+
+    if "Notes" not in df_out.columns:
+        if "Subject" in df_out.columns:
+            df_out.insert(df_out.columns.get_loc("Subject") + 1, "Notes", "")
+        else:
+            df_out["Notes"] = ""
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("SELECT column_name FROM custom_columns")
+    custom_cols = [row[0] for row in cur.fetchall()]
+    con.close()
+
+    for col in custom_cols:
+        if col in df.columns and col not in df_out.columns:
+            df_out[col] = df[col]
+
+    if "Link" in df_out.columns:
+        df_out["_url"] = df_out["Link"].copy()
+        df_out["Link"] = df_out["_url"].apply(
+            lambda u: f'=HYPERLINK("{str(u).strip()}", "Open")' if pd.notna(u) and str(u).strip() else ""
+        )
+
+    desired = [
+        "Date (ET)",
+        "Initiated By",
+        "P/N",
+        "Category", "Category_Final",
+        "Summary",
+        "Subject",
+        "Notes",
+        "Link",
+    ] + custom_cols
+    existing = [c for c in desired if c in df_out.columns]
+    if "_url" in df_out.columns:
+        df_out = df_out.drop(columns=["_url"])
+    df_out = df_out[existing]
+
+    # Write to BytesIO buffer
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        sheet = "Complaints"
+        df_out.to_excel(writer, sheet_name=sheet, index=False)
+        wb = writer.book
+        ws = wb[sheet]
+        ws.freeze_panes = "A2"
+        last_col = get_column_letter(ws.max_column)
+        last_row = ws.max_row
+        tbl = Table(displayName="ComplaintTable", ref=f"A1:{last_col}{last_row}")
+        tbl.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium9",
+            showFirstColumn=False, showLastColumn=False,
+            showRowStripes=True, showColumnStripes=False
+        )
+        ws.add_table(tbl)
+        if "Summary" in df_out.columns:
+            cidx = df_out.columns.get_loc("Summary") + 1
+            for r in range(2, ws.max_row + 1):
+                ws.cell(row=r, column=cidx).alignment = Alignment(wrap_text=True, vertical="top")
+        if "Date (ET)" in df_out.columns:
+            didx = df_out.columns.get_loc("Date (ET)") + 1
+            for r in range(2, ws.max_row + 1):
+                ws.cell(row=r, column=didx).number_format = "mm/dd/yyyy"
+        for c in range(1, ws.max_column + 1):
+            ws.cell(row=1, column=c).font = Font(bold=True)
+        target_widths = {
+            "Date (ET)": 12,
+            "Initiated By": 30,
+            "P/N": 26,
+            "Summary": 64,
+            "Category": 18, "Category_Final": 18,
+            "Subject": 44,
+            "Notes": 30,
+            "Link": 10,
+        }
+        for idx, name in enumerate(df_out.columns, start=1):
+            ws.column_dimensions[get_column_letter(idx)].width = target_widths.get(name, 24)
+
+    buffer.seek(0)
+    return buffer.getvalue()
 
 def run_sync_process():
     """Run the email sync process in background"""
@@ -431,26 +557,20 @@ with st.sidebar:
         st.session_state.df = load_data()
         st.rerun()
     
-    # Export buttons
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Save to Excel", use_container_width=True):
-            try:
-                export_to_excel()
-                st.success("Excel saved!")
-            except Exception as e:
-                st.error(f"Export failed: {e}")
-
-    with col2:
-        if st.button("Open Excel", use_container_width=True):
-            try:
-                if os.path.exists(EXCEL_PATH):
-                    webbrowser.open(EXCEL_PATH)
-                    st.success("Opening Excel...")
-                else:
-                    st.warning("Excel file not found")
-            except Exception as e:
-                st.error(f"Error: {e}")
+    # Excel download button - exports current dashboard data including any saved changes
+    try:
+        excel_data = generate_excel_bytes()
+        st.download_button(
+            label="📥 Download Excel",
+            data=excel_data,
+            file_name=f"Complaint_Log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
+        )
+        st.caption("💡 Click to download Excel with current dashboard data")
+    except Exception as e:
+        st.error(f"Failed to generate Excel: {e}")
     
     st.markdown("---")
     st.header("Filters")
