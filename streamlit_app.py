@@ -160,20 +160,6 @@ st.markdown(f"""
         border-color: {PRIMARY_COLOR};
     }}
     
-    /* Auth code display */
-    .auth-code {{
-        background-color: #1E3A8A;
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        text-align: center;
-        font-size: 28px;
-        font-weight: bold;
-        letter-spacing: 4px;
-        margin: 20px 0;
-        font-family: 'Courier New', monospace;
-    }}
-    
     /* Success/Info boxes */
     .stSuccess {{
         background-color: #D1FAE5;
@@ -210,6 +196,8 @@ if 'auth_in_progress' not in st.session_state:
     st.session_state.auth_in_progress = False
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = 0  # 0=Data Table, 1=Analytics, 2=Category, 3=System Logs
 
 # ==========================================
 # Helper Functions
@@ -590,55 +578,51 @@ with st.sidebar:
         
         st.markdown("---")
         st.warning("Complete Authentication")
-        st.markdown("**Follow these steps:**")
         st.markdown("1. Copy the code below")
-        st.markdown("2. Click 'Open Login Page'")
+        st.markdown("2. Click to open the login page")
         st.markdown("3. Paste the code and sign in")
         st.markdown("4. Click 'Check Authentication'")
         
-        # Show code in big blue box
-        st.markdown(f'<div class="auth-code">{flow["user_code"]}</div>', unsafe_allow_html=True)
+        # Show code in smaller, cleaner box
+        st.code(flow["user_code"], language=None)
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Copy Code", use_container_width=True):
-                st.write("Code copied!")
-        with col2:
             st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
-        
-        # Check authentication button
-        if st.button("Check Authentication", use_container_width=True, type="primary"):
-            with st.spinner("Checking..."):
-                try:
-                    log_message("Checking authentication status...")
-                    result = app.acquire_token_by_device_flow(flow)
-                    
-                    if "access_token" in result:
-                        st.session_state.access_token = result["access_token"]
-                        st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                        st.session_state.authenticated = True
-                        st.session_state.pop("device_flow", None)
-                        st.session_state.pop("auth_started", None)
-                        st.session_state.auth_in_progress = False
+        with col2:
+            # Check authentication button
+            if st.button("Check Authentication", use_container_width=True, type="primary"):
+                with st.spinner("Checking..."):
+                    try:
+                        log_message("Checking authentication status...")
+                        result = app.acquire_token_by_device_flow(flow)
                         
-                        log_message("Authentication successful!")
-                        log_message(f"Token expires at: {datetime.fromtimestamp(st.session_state.token_expires_at).strftime('%Y-%m-%d %H:%M:%S')}")
-                        log_message(f"Access token stored in session state")
-                        st.success("Authenticated successfully!")
-                        
-                        # Add a button to continue
-                        if st.button("Continue to Dashboard", use_container_width=True, type="primary"):
-                            st.rerun()
-                    else:
-                        if "pending" in result.get('error_description', '').lower():
-                            st.warning("Still waiting. Complete sign-in, then click 'Check Authentication' again.")
-                            log_message("Auth pending")
+                        if "access_token" in result:
+                            st.session_state.access_token = result["access_token"]
+                            st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                            st.session_state.authenticated = True
+                            st.session_state.pop("device_flow", None)
+                            st.session_state.pop("auth_started", None)
+                            st.session_state.auth_in_progress = False
+                            
+                            log_message("Authentication successful!")
+                            log_message(f"Token expires at: {datetime.fromtimestamp(st.session_state.token_expires_at).strftime('%Y-%m-%d %H:%M:%S')}")
+                            log_message(f"Access token stored in session state")
+                            st.success("Authenticated successfully!")
+                            
+                            # Add a button to continue
+                            if st.button("Continue to Dashboard", use_container_width=True, type="primary"):
+                                st.rerun()
                         else:
-                            st.error(f"Failed: {result.get('error_description', 'Unknown error')}")
-                            log_message(f"Auth failed: {result.get('error_description')}")
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-                    log_message(f"Auth error: {str(e)}")
+                            if "pending" in result.get('error_description', '').lower():
+                                st.warning("Still waiting. Complete sign-in, then click 'Check Authentication' again.")
+                                log_message("Auth pending")
+                            else:
+                                st.error(f"Failed: {result.get('error_description', 'Unknown error')}")
+                                log_message(f"Auth failed: {result.get('error_description')}")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+                        log_message(f"Auth error: {str(e)}")
         
         # Show timeout
         if "auth_started" in st.session_state:
@@ -664,6 +648,7 @@ with st.sidebar:
     st.subheader("Step 2: Run Sync")
     
     if st.button("Run Email Sync", use_container_width=True, type="primary", key="sync_button", disabled=not check_authentication()):
+        st.session_state.active_tab = 3  # Switch to System Logs tab
         log_message("="*60)
         log_message("Run Email Sync button clicked")
         log_message(f"Authentication status: {check_authentication()}")
@@ -688,6 +673,8 @@ with st.sidebar:
                     with col2:
                         st.metric("Filtered", summary.get('filtered_out', 0))
                         st.metric("Unchanged", summary.get('unchanged', 0))
+                
+                st.info("Check the System Logs tab below to see detailed sync logs")
             except Exception as e:
                 st.error(f"Sync failed: {str(e)}")
                 log_message(f"ERROR: {str(e)}")
@@ -1063,7 +1050,7 @@ else:
     
     with tab4:
         st.subheader("System Logs - Email Sync Process")
-        st.info("Real-time logs from email sync operations. Check the System Logs tab after running sync.")
+        st.info("Real-time logs from email sync operations.")
         
         col1, col2 = st.columns([1, 4])
         with col1:
@@ -1076,27 +1063,14 @@ else:
             log_count = len(st.session_state.sync_logs)
             st.caption(f"Total log entries: {log_count}")
             
-            st.markdown("""
-            <style>
-            .log-terminal {
-                background-color: #0D1117;
-                color: #C9D1D9;
-                padding: 1rem;
-                border-radius: 6px;
-                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-                font-size: 0.85rem;
-                max-height: 600px;
-                overflow-y: auto;
-                border: 1px solid #30363D;
-            }
-            .log-terminal pre {
-                margin: 0;
-                color: #C9D1D9;
-            }
-            </style>
-            """, unsafe_allow_html=True)
-            
-            st.markdown(f'<div class="log-terminal"><pre>{all_logs}</pre></div>', unsafe_allow_html=True)
+            # Display logs in a terminal-style text area
+            st.text_area(
+                "Logs",
+                value=all_logs,
+                height=600,
+                disabled=True,
+                label_visibility="collapsed"
+            )
             
             st.download_button(
                 label="Download Logs",
