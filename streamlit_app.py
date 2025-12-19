@@ -504,35 +504,12 @@ def check_authentication() -> bool:
     
     return False
 
-# ==========================================
-# Header Section
-# ==========================================
-st.markdown(f"""
-<div class="main-header">
-    <h1>MAC PRODUCTS</h1>
-    <p>Quality Automation Dashboard - Complaint Management System</p>
-</div>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# Sync Report Modal (stays until closed)
-# ==========================================
-if st.session_state.show_sync_report and st.session_state.sync_report_data:
+@st.dialog("Sync Report", width="medium")
+def show_sync_report_dialog():
+    """Display sync report in a modal dialog"""
     summary = st.session_state.sync_report_data
     
     st.success("Sync completed successfully!")
-    
-    # Create a container with close button
-    col1, col2 = st.columns([10, 1])
-    with col2:
-        if st.button("✕", key="close_report"):
-            st.session_state.show_sync_report = False
-            st.session_state.sync_report_data = None
-            st.session_state.df = load_data()  # Reload data before closing
-            st.rerun()
-    
-    with col1:
-        st.markdown("### Sync Report")
     
     # Show metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -547,86 +524,111 @@ if st.session_state.show_sync_report and st.session_state.sync_report_data:
     
     # Show recent changes
     if summary.get('updates_log'):
+        st.markdown("---")
         st.markdown("**Recent Changes:**")
         for log_entry in summary['updates_log'][:10]:  # Show last 10
             st.caption(log_entry)
     
     st.markdown("---")
+    
+    # Close button
+    if st.button("Close", use_container_width=True, type="primary"):
+        st.session_state.show_sync_report = False
+        st.session_state.sync_report_data = None
+        st.session_state.df = load_data()  # Reload data
+        st.rerun()
 
-# ==========================================
-# Authentication Popup Dialog
-# ==========================================
-if st.session_state.show_auth_dialog:
-    with st.container():
-        st.markdown("---")
-        st.warning("Microsoft Authentication Required")
-        st.markdown("To sync emails, sign in with your Microsoft account:")
-        
-        # Start device flow if not already started
-        if "device_flow" not in st.session_state:
-            try:
-                flow = app.initiate_device_flow(scopes=SCOPES)
-                if "user_code" in flow:
-                    st.session_state.device_flow = flow
-                    st.session_state.auth_started = time.time()
-                else:
-                    st.error(f"Failed to start authentication: {flow.get('error_description', 'Unknown error')}")
-            except Exception as e:
-                st.error(f"Authentication error: {str(e)}")
-        
-        if "device_flow" in st.session_state:
-            flow = st.session_state.device_flow
-            
-            st.markdown("**Your code:**")
-            st.code(flow["user_code"], language=None)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
-            with col2:
-                if st.button("Run Sync", use_container_width=True, type="primary"):
-                    with st.spinner("Checking authentication and syncing..."):
-                        try:
-                            result = app.acquire_token_by_device_flow(flow)
-                            
-                            if "access_token" in result:
-                                st.session_state.access_token = result["access_token"]
-                                st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                                st.session_state.authenticated = True
-                                st.session_state.pop("device_flow", None)
-                                st.session_state.pop("auth_started", None)
-                                st.session_state.show_auth_dialog = False
-                                
-                                log_message("Authentication successful!")
-                                
-                                # Now run sync
-                                summary = run_sync_process()
-                                st.success("Sync completed!")
-                                st.rerun()
-                            else:
-                                if "pending" in result.get('error_description', '').lower():
-                                    st.warning("Complete sign-in first, then click 'Run Sync'")
-                                else:
-                                    st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
-                        except Exception as e:
-                            st.error(f"Error: {str(e)}")
-            
-            # Show timeout
-            if "auth_started" in st.session_state:
-                elapsed = time.time() - st.session_state.auth_started
-                remaining = max(0, 900 - elapsed)
-                if remaining > 0:
-                    minutes = int(remaining // 60)
-                    seconds = int(remaining % 60)
-                    st.caption(f"Code expires in {minutes}m {seconds}s")
-                else:
-                    st.error("Code expired!")
-                    if st.button("Get New Code"):
+@st.dialog("Microsoft Authentication Required", width="medium")
+def show_auth_dialog():
+    """Display authentication dialog"""
+    st.warning("To sync emails, sign in with your Microsoft account")
+    
+    # Start device flow if not already started
+    if "device_flow" not in st.session_state:
+        try:
+            flow = app.initiate_device_flow(scopes=SCOPES)
+            if "user_code" in flow:
+                st.session_state.device_flow = flow
+                st.session_state.auth_started = time.time()
+            else:
+                st.error(f"Failed to start authentication: {flow.get('error_description', 'Unknown error')}")
+                return
+        except Exception as e:
+            st.error(f"Authentication error: {str(e)}")
+            return
+    
+    flow = st.session_state.device_flow
+    
+    st.markdown("**Your authentication code:**")
+    st.code(flow["user_code"], language=None)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
+    with col2:
+        if st.button("Run Sync", use_container_width=True, type="primary"):
+            with st.spinner("Checking authentication and syncing..."):
+                try:
+                    result = app.acquire_token_by_device_flow(flow)
+                    
+                    if "access_token" in result:
+                        st.session_state.access_token = result["access_token"]
+                        st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                        st.session_state.authenticated = True
                         st.session_state.pop("device_flow", None)
                         st.session_state.pop("auth_started", None)
+                        st.session_state.show_auth_dialog = False
+                        
+                        log_message("Authentication successful!")
+                        
+                        # Now run sync
+                        summary = run_sync_process()
+                        
+                        # Show sync report
+                        st.session_state.show_sync_report = True
+                        st.session_state.sync_report_data = summary
                         st.rerun()
-        
-        st.markdown("---")
+                    else:
+                        if "pending" in result.get('error_description', '').lower():
+                            st.warning("Complete sign-in first, then click 'Run Sync'")
+                        else:
+                            st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    
+    # Show timeout
+    if "auth_started" in st.session_state:
+        elapsed = time.time() - st.session_state.auth_started
+        remaining = max(0, 900 - elapsed)
+        if remaining > 0:
+            minutes = int(remaining // 60)
+            seconds = int(remaining % 60)
+            st.caption(f"Code expires in {minutes}m {seconds}s")
+        else:
+            st.error("Code expired!")
+            if st.button("Get New Code"):
+                st.session_state.pop("device_flow", None)
+                st.session_state.pop("auth_started", None)
+                st.rerun()
+
+# ==========================================
+# Header Section
+# ==========================================
+st.markdown(f"""
+<div class="main-header">
+    <h1>MAC PRODUCTS</h1>
+    <p>Quality Automation Dashboard - Complaint Management System</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# Show Dialogs
+# ==========================================
+if st.session_state.show_sync_report and st.session_state.sync_report_data:
+    show_sync_report_dialog()
+
+if st.session_state.show_auth_dialog:
+    show_auth_dialog()
 
 # ==========================================
 # Sidebar - Clean Controls
