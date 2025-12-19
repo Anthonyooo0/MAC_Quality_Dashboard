@@ -134,6 +134,25 @@ st.markdown(f"""
         box-shadow: 0 4px 8px rgba(30, 58, 138, 0.3);
     }}
     
+    /* Link Buttons - MAC Blue (for Open Login Page) */
+    a[kind="primary"], a[kind="secondary"] {{
+        background-color: {BUTTON_COLOR} !important;
+        color: white !important;
+        border-radius: 6px;
+        font-weight: 600;
+        border: none;
+        text-decoration: none;
+        padding: 0.5rem 1rem;
+        display: inline-block;
+        transition: all 0.2s ease;
+    }}
+    
+    a[kind="primary"]:hover, a[kind="secondary"]:hover {{
+        background-color: #1E3A8A !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(30, 58, 138, 0.3);
+    }}
+    
     .stTabs [data-baseweb="tab-list"] {{
         gap: 8px;
     }}
@@ -460,7 +479,11 @@ def run_sync_process():
         log_message("="*60)
         
         log_message("Calling process() function from main.py...")
+        log_message("This may take 1-3 minutes depending on email volume...")
+        
+        # Call the main process function
         summary = process()
+        
         log_message("process() completed successfully")
         
         if summary:
@@ -470,6 +493,9 @@ def run_sync_process():
             log_message(f"  - Filtered out: {summary.get('filtered_out', 0)}")
             log_message(f"  - Unchanged: {summary.get('unchanged', 0)}")
             log_message(f"  - Total checked: {summary.get('checked', 0)}")
+        else:
+            log_message("WARNING: process() returned None or empty summary")
+            summary = {"new": 0, "updated": 0, "filtered_out": 0, "unchanged": 0, "checked": 0, "updates_log": []}
         
         log_message("="*60)
         log_message("Sync completed successfully!")
@@ -477,7 +503,11 @@ def run_sync_process():
         
         st.session_state.last_sync = datetime.now()
         st.session_state.sync_summary = summary
+        
+        log_message("Loading updated data from database...")
         st.session_state.df = load_data()
+        log_message("Data loaded successfully")
+        
         st.session_state.sync_running = False
         return summary
     except Exception as e:
@@ -567,34 +597,50 @@ def show_auth_dialog():
         st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
     with col2:
         if st.button("Run Sync", use_container_width=True, type="primary"):
-            with st.spinner("Checking authentication and syncing..."):
-                try:
-                    result = app.acquire_token_by_device_flow(flow)
+            try:
+                log_message("Run Sync button clicked from auth dialog")
+                result = app.acquire_token_by_device_flow(flow)
+                
+                if "access_token" in result:
+                    st.session_state.access_token = result["access_token"]
+                    st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                    st.session_state.authenticated = True
+                    st.session_state.pop("device_flow", None)
+                    st.session_state.pop("auth_started", None)
+                    st.session_state.show_auth_dialog = False
                     
-                    if "access_token" in result:
-                        st.session_state.access_token = result["access_token"]
-                        st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                        st.session_state.authenticated = True
-                        st.session_state.pop("device_flow", None)
-                        st.session_state.pop("auth_started", None)
-                        st.session_state.show_auth_dialog = False
-                        
-                        log_message("Authentication successful!")
-                        
-                        # Now run sync
+                    log_message("Authentication successful! Starting sync...")
+                    st.success("Authenticated! Starting sync...")
+                    
+                    # Run sync with progress indicator
+                    try:
                         summary = run_sync_process()
+                        log_message("Sync completed, showing report")
                         
                         # Show sync report
                         st.session_state.show_sync_report = True
                         st.session_state.sync_report_data = summary
                         st.rerun()
+                    except Exception as sync_error:
+                        log_message(f"Sync failed: {str(sync_error)}")
+                        st.error(f"Sync failed: {str(sync_error)}")
+                        # Close dialog even if sync fails
+                        time.sleep(3)
+                        st.rerun()
+                else:
+                    if "pending" in result.get('error_description', '').lower():
+                        st.warning("Complete sign-in first, then click 'Run Sync'")
+                        log_message("Auth still pending")
                     else:
-                        if "pending" in result.get('error_description', '').lower():
-                            st.warning("Complete sign-in first, then click 'Run Sync'")
-                        else:
-                            st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+                        error_msg = result.get('error_description', 'Unknown error')
+                        st.error(f"Authentication failed: {error_msg}")
+                        log_message(f"Auth failed: {error_msg}")
+            except Exception as e:
+                error_msg = str(e)
+                st.error(f"Error: {error_msg}")
+                log_message(f"Error in auth/sync: {error_msg}")
+                import traceback
+                log_message(traceback.format_exc())
     
     # Show timeout
     if "auth_started" in st.session_state:
