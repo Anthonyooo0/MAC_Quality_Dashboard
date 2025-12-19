@@ -592,7 +592,7 @@ st.markdown(f"""
 
 # Show sync status banner if sync is running
 if st.session_state.get('sync_running', False):
-    st.info("🔄 **EMAIL SYNC IN PROGRESS** - Processing emails... Check System Logs tab for live updates")
+    st.info("**EMAIL SYNC IN PROGRESS** - Processing emails... Check System Logs tab for live updates")
 
 # ==========================================
 # Sidebar - Controls & Filters
@@ -718,13 +718,13 @@ with st.sidebar:
         if "device_flow" in st.session_state:
             flow = st.session_state.device_flow
 
-            st.info("🔐 Authenticate with Microsoft to start email sync:")
+            st.info("Authenticate with Microsoft to start email sync:")
             st.code(flow['user_code'], language=None)
 
-            st.link_button("📱 Open Microsoft Login", "https://microsoft.com/devicelogin", use_container_width=True, type="primary")
+            st.link_button("Open Microsoft Login", "https://microsoft.com/devicelogin", use_container_width=True, type="primary")
 
             # Auto-poll for authentication
-            with st.spinner("⏳ Waiting for you to sign in... (auto-checking every 5 seconds)"):
+            with st.spinner("Waiting for you to sign in... (auto-checking every 5 seconds)"):
                 try:
                     result = app.acquire_token_by_device_flow(flow, timeout=5)
 
@@ -736,7 +736,7 @@ with st.sidebar:
                         st.session_state.pop("auth_started", None)
                         st.session_state.needs_auth = False
                         st.session_state.auto_run_sync = True  # Flag to auto-run sync
-                        st.success("✅ Authentication successful! Starting email sync...")
+                        st.success("Authentication successful! Starting email sync...")
                         time.sleep(1)
                         st.rerun()
                     else:
@@ -747,7 +747,7 @@ with st.sidebar:
                             time.sleep(5)
                             st.rerun()
                         else:
-                            st.error(f"❌ Authentication failed: {result.get('error_description', 'Unknown error')}")
+                            st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
                 except Exception as e:
                     error_msg = str(e).lower()
                     if "pending" in error_msg or "authorization_pending" in error_msg:
@@ -771,13 +771,13 @@ with st.sidebar:
                         st.session_state.pop("auth_started", None)
                         st.rerun()
     else:
-        st.success("✅ Authenticated")
+        st.success("Authenticated")
         st.caption("Ready to sync emails")
 
         # Auto-run sync if flag is set (after fresh authentication)
         if st.session_state.get('auto_run_sync', False):
             st.session_state.auto_run_sync = False  # Clear flag
-            st.info("🔄 **SYNC RUNNING** - Processing emails from Microsoft Graph...")
+            st.info("**SYNC RUNNING** - Processing emails from Microsoft Graph...")
 
             # Show live logs as sync runs
             log_placeholder = st.empty()
@@ -787,11 +787,11 @@ with st.sidebar:
 
                 # Clear the log placeholder and show completion
                 log_placeholder.empty()
-                st.success("✅ **EMAIL SYNC COMPLETED!**")
+                st.success("**EMAIL SYNC COMPLETED**")
                 st.balloons()
 
                 # Show sync summary
-                with st.expander("📊 Sync Summary", expanded=True):
+                with st.expander("Sync Summary", expanded=True):
                     col1, col2 = st.columns(2)
                     with col1:
                         st.metric("New", summary.get('new', 0))
@@ -801,10 +801,10 @@ with st.sidebar:
                         st.metric("Unchanged", summary.get('unchanged', 0))
 
                 # Show System Logs link
-                st.info("📄 Check the **System Logs** tab below for detailed processing logs")
+                st.info("Check the **System Logs** tab below for detailed processing logs")
             except Exception as e:
                 log_placeholder.empty()
-                st.error(f"❌ Auto-sync failed: {str(e)}")
+                st.error(f"Auto-sync failed: {str(e)}")
 
     st.markdown("---")
     st.header("Filters")
