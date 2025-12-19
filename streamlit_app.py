@@ -714,39 +714,44 @@ with st.sidebar:
         if "device_flow" in st.session_state:
             flow = st.session_state.device_flow
 
-            st.info("To sync emails, authenticate with Microsoft:")
+            st.info("🔐 Authenticate with Microsoft to start email sync:")
             st.code(flow['user_code'], language=None)
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
-            with col2:
-                if st.button("Check Authentication", use_container_width=True, type="primary", key="auth_check"):
-                    with st.spinner("Checking authentication..."):
-                        try:
-                            st.info("Contacting Microsoft to verify sign-in...")
-                            result = app.acquire_token_by_device_flow(flow)
-                            st.info(f"Got response from Microsoft. Checking for access token...")
+            st.link_button("📱 Open Microsoft Login", "https://microsoft.com/devicelogin", use_container_width=True, type="primary")
 
-                            if "access_token" in result:
-                                st.session_state.access_token = result["access_token"]
-                                st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                                st.session_state.pop("device_flow", None)
-                                st.session_state.pop("auth_started", None)
-                                st.session_state.needs_auth = False
-                                st.success("Authentication successful!")
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                if "pending" in result.get('error_description', '').lower():
-                                    st.warning("Still waiting for sign-in. Try again in a moment.")
-                                else:
-                                    st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
-                                    st.error(f"Full result: {result}")
-                        except Exception as e:
-                            st.error(f"Authentication error: {str(e)}")
-                            import traceback
-                            st.code(traceback.format_exc())
+            # Auto-poll for authentication
+            with st.spinner("⏳ Waiting for you to sign in... (auto-checking every 5 seconds)"):
+                try:
+                    result = app.acquire_token_by_device_flow(flow, timeout=5)
+
+                    if "access_token" in result:
+                        # Authentication successful!
+                        st.session_state.access_token = result["access_token"]
+                        st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                        st.session_state.pop("device_flow", None)
+                        st.session_state.pop("auth_started", None)
+                        st.session_state.needs_auth = False
+                        st.session_state.auto_run_sync = True  # Flag to auto-run sync
+                        st.success("✅ Authentication successful! Starting email sync...")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        # Still waiting for user to sign in
+                        error_desc = result.get('error_description', '').lower()
+                        if "pending" in error_desc or "authorization_pending" in error_desc:
+                            # Still pending - auto-refresh to check again
+                            time.sleep(5)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Authentication failed: {result.get('error_description', 'Unknown error')}")
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if "pending" in error_msg or "authorization_pending" in error_msg:
+                        # Still pending - auto-refresh
+                        time.sleep(5)
+                        st.rerun()
+                    else:
+                        st.error(f"Authentication error: {str(e)}")
 
             # Show timeout
             if "auth_started" in st.session_state:
@@ -762,8 +767,29 @@ with st.sidebar:
                         st.session_state.pop("auth_started", None)
                         st.rerun()
     else:
-        st.success("Authenticated")
+        st.success("✅ Authenticated")
         st.caption("Ready to sync emails")
+
+        # Auto-run sync if flag is set (after fresh authentication)
+        if st.session_state.get('auto_run_sync', False):
+            st.session_state.auto_run_sync = False  # Clear flag
+            with st.spinner("🔄 Auto-starting email sync..."):
+                try:
+                    summary = run_sync_process()
+                    st.success("✅ Email sync completed!")
+                    st.balloons()
+
+                    # Show sync summary
+                    with st.expander("Sync Summary", expanded=True):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("New", summary.get('new', 0))
+                            st.metric("Updated", summary.get('updated', 0))
+                        with col2:
+                            st.metric("Filtered", summary.get('filtered_out', 0))
+                            st.metric("Unchanged", summary.get('unchanged', 0))
+                except Exception as e:
+                    st.error(f"❌ Auto-sync failed: {str(e)}")
 
     st.markdown("---")
     st.header("Filters")
