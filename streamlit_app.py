@@ -165,9 +165,15 @@ st.markdown(f"""
     }}
     
     .stWarning {{
-        background-color: #FEF3C7;
-        color: #92400E;
-        border-left: 4px solid #D97706;
+        background-color: {SECONDARY_COLOR};
+        color: {PRIMARY_COLOR};
+        border-left: 4px solid {PRIMARY_COLOR};
+    }}
+    
+    .stError {{
+        background-color: {SECONDARY_COLOR};
+        color: {PRIMARY_COLOR};
+        border-left: 4px solid {PRIMARY_COLOR};
     }}
 </style>
 """, unsafe_allow_html=True)
@@ -187,6 +193,10 @@ if 'show_auth_dialog' not in st.session_state:
     st.session_state.show_auth_dialog = False
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+if 'show_sync_report' not in st.session_state:
+    st.session_state.show_sync_report = False
+if 'sync_report_data' not in st.session_state:
+    st.session_state.sync_report_data = None
 
 # ==========================================
 # Helper Functions
@@ -505,6 +515,45 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
+# Sync Report Modal (stays until closed)
+# ==========================================
+if st.session_state.show_sync_report and st.session_state.sync_report_data:
+    summary = st.session_state.sync_report_data
+    
+    st.success("Sync completed successfully!")
+    
+    # Create a container with close button
+    col1, col2 = st.columns([10, 1])
+    with col2:
+        if st.button("✕", key="close_report"):
+            st.session_state.show_sync_report = False
+            st.session_state.sync_report_data = None
+            st.session_state.df = load_data()  # Reload data before closing
+            st.rerun()
+    
+    with col1:
+        st.markdown("### Sync Report")
+    
+    # Show metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("New Complaints", summary.get('new', 0))
+    with col2:
+        st.metric("Updated", summary.get('updated', 0))
+    with col3:
+        st.metric("Filtered Out", summary.get('filtered_out', 0))
+    with col4:
+        st.metric("Total Checked", summary.get('checked', 0))
+    
+    # Show recent changes
+    if summary.get('updates_log'):
+        st.markdown("**Recent Changes:**")
+        for log_entry in summary['updates_log'][:10]:  # Show last 10
+            st.caption(log_entry)
+    
+    st.markdown("---")
+
+# ==========================================
 # Authentication Popup Dialog
 # ==========================================
 if st.session_state.show_auth_dialog:
@@ -595,14 +644,18 @@ with st.sidebar:
         if check_authentication():
             # Already authenticated, just run sync
             log_message("Run Email Sync clicked - already authenticated")
-            with st.spinner("Syncing emails..."):
-                try:
+            try:
+                with st.spinner("Syncing emails..."):
                     summary = run_sync_process()
-                    st.success("Sync completed!")
-                    st.balloons()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Sync failed: {str(e)}")
+                
+                # Store summary in session state to display it
+                st.session_state.show_sync_report = True
+                st.session_state.sync_report_data = summary
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Sync failed: {str(e)}")
+                log_message(f"ERROR: {str(e)}")
         else:
             # Need authentication, show dialog
             st.session_state.show_auth_dialog = True
