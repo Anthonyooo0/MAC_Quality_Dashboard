@@ -1,7 +1,6 @@
 """
 MAC Quality Dashboard - Streamlit Interface
 Modern, interactive dashboard for quality complaint management
-SIMPLIFIED AUTHENTICATION - One button does everything!
 """
 
 # ===== PATH FIX FOR EXE DEPLOYMENT =====
@@ -47,15 +46,15 @@ st.set_page_config(
 )
 
 # ==========================================
-# MAC Blue & White Theme
+# MAC Blue & White Theme (matching dashboard.py)
 # ==========================================
-PRIMARY_COLOR = "#1E3A8A"
-SECONDARY_COLOR = "#EEF2FF"
-BACKGROUND_COLOR = "#FFFFFF"
-TEXT_COLOR = "#0F172A"
-BUTTON_COLOR = "#1E40AF"
-CARD_BG = "#FFFFFF"
-HEADER_BG = "#1E3A8A"
+PRIMARY_COLOR = "#1E3A8A"  # MAC Blue
+SECONDARY_COLOR = "#EEF2FF"  # Light blue
+BACKGROUND_COLOR = "#FFFFFF"  # White
+TEXT_COLOR = "#0F172A"  # Dark text
+BUTTON_COLOR = "#1E40AF"  # Button blue
+CARD_BG = "#FFFFFF"  # White cards
+HEADER_BG = "#1E3A8A"  # MAC Blue header
 
 st.markdown(f"""
 <style>
@@ -161,18 +160,23 @@ st.markdown(f"""
         border-color: {PRIMARY_COLOR};
     }}
     
-    /* Auth code display */
-    .auth-code {{
-        background-color: #1E3A8A;
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        text-align: center;
-        font-size: 28px;
-        font-weight: bold;
-        letter-spacing: 4px;
-        margin: 20px 0;
-        font-family: 'Courier New', monospace;
+    /* Dataframe styling */
+    .dataframe {{
+        border: 1px solid {SECONDARY_COLOR} !important;
+    }}
+    
+    /* Input fields */
+    .stTextInput>div>div>input, 
+    .stSelectbox>div>div>select,
+    .stMultiselect>div>div>div {{
+        border-color: {SECONDARY_COLOR};
+        background-color: white;
+    }}
+    
+    .stTextInput>div>div>input:focus,
+    .stSelectbox>div>div>select:focus {{
+        border-color: {PRIMARY_COLOR};
+        box-shadow: 0 0 0 1px {PRIMARY_COLOR};
     }}
     
     /* Success/Info boxes */
@@ -193,8 +197,30 @@ st.markdown(f"""
         color: #92400E;
         border-left: 4px solid #D97706;
     }}
+    
+    .stError {{
+        background-color: #DBEAFE;
+        color: #1E3A8A;
+        border-left: 4px solid #1E3A8A;
+    }}
+    
+    /* Clean white cards */
+    .element-container {{
+        background-color: transparent;
+    }}
 </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# Clear Authentication on Every Page Load
+# ==========================================
+# Force re-authentication on every page refresh
+# Only clear completed auth tokens, not in-progress device flow
+if 'access_token' in st.session_state:
+    del st.session_state['access_token']
+if 'token_expires_at' in st.session_state:
+    del st.session_state['token_expires_at']
+# Don't clear device_flow and auth_started - they're needed during auth process
 
 # ==========================================
 # Session State Initialization
@@ -205,12 +231,12 @@ if 'last_sync' not in st.session_state:
     st.session_state.last_sync = None
 if 'sync_running' not in st.session_state:
     st.session_state.sync_running = False
+if 'custom_columns' not in st.session_state:
+    st.session_state.custom_columns = []
+if 'edit_mode' not in st.session_state:
+    st.session_state.edit_mode = False
 if 'sync_logs' not in st.session_state:
     st.session_state.sync_logs = []
-if 'auth_in_progress' not in st.session_state:
-    st.session_state.auth_in_progress = False
-if 'run_sync_after_auth' not in st.session_state:
-    st.session_state.run_sync_after_auth = False
 
 # ==========================================
 # Helper Functions
@@ -349,14 +375,17 @@ def generate_excel_bytes() -> bytes:
     from openpyxl.worksheet.table import Table, TableStyleInfo
     from openpyxl.styles import Alignment, Font
 
+    # Fetch current data from database
     df = fetch_all_rows()
 
     if df.empty:
+        # Return empty Excel file
         buffer = BytesIO()
         pd.DataFrame({"Message": ["No data available"]}).to_excel(buffer, index=False, engine="openpyxl")
         buffer.seek(0)
         return buffer.getvalue()
 
+    # Sort and deduplicate
     if "case_key" in df.columns and "received_utc" in df.columns:
         df = df.sort_values("received_utc").drop_duplicates(subset=["case_key"], keep="last")
 
@@ -422,6 +451,7 @@ def generate_excel_bytes() -> bytes:
         df_out = df_out.drop(columns=["_url"])
     df_out = df_out[existing]
 
+    # Write to BytesIO buffer
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         sheet = "Complaints"
@@ -464,65 +494,91 @@ def generate_excel_bytes() -> bytes:
     buffer.seek(0)
     return buffer.getvalue()
 
-def log_message(msg: str):
-    """Add message to sync logs with timestamp"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    log_entry = f"[{timestamp}] {msg}\n"
-    st.session_state.sync_logs.append(log_entry)
-    print(log_entry.strip())
+class StreamlitLogger:
+    """Custom logger that writes to both console and Streamlit session state"""
+    def __init__(self, log_list):
+        self.log_list = log_list
+        self.terminal = sys.stdout
+
+    def write(self, message):
+        if message and message.strip():
+            self.log_list.append(message)
+            self.terminal.write(message)
+
+    def flush(self):
+        self.terminal.flush()
 
 def run_sync_process():
-    """Run the email sync process"""
+    """Run the email sync process in background and capture logs"""
+    import sys
+    import traceback
+
     try:
         st.session_state.sync_running = True
-        log_message("="*60)
-        log_message("Starting Email Sync Process")
-        log_message("="*60)
-        
-        log_message("Calling process() function...")
-        summary = process()
-        log_message("process() completed successfully")
-        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Add header to logs
+        header_msg = f"\n{'='*60}\n[{timestamp}] Starting Email Sync Process\n{'='*60}\n"
+        st.session_state.sync_logs.append(header_msg)
+
+        # Log: Starting process
+        log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Initializing email sync...\n"
+        st.session_state.sync_logs.append(log_msg)
+
+        # Replace stdout with custom logger
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+
+        # Create custom logger that writes to both console and session state
+        logger = StreamlitLogger(st.session_state.sync_logs)
+        sys.stdout = logger
+        sys.stderr = logger
+
+        try:
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Calling process() function...\n"
+            st.session_state.sync_logs.append(log_msg)
+
+            summary = process()
+
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] process() returned successfully\n"
+            st.session_state.sync_logs.append(log_msg)
+        except Exception as proc_error:
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] ERROR in process(): {str(proc_error)}\n"
+            st.session_state.sync_logs.append(log_msg)
+            raise
+        finally:
+            # Restore stdout/stderr
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+        # Log summary details
         if summary:
-            log_message("\nSync Summary:")
-            log_message(f"  - New complaints: {summary.get('new', 0)}")
-            log_message(f"  - Updated: {summary.get('updated', 0)}")
-            log_message(f"  - Filtered out: {summary.get('filtered_out', 0)}")
-            log_message(f"  - Unchanged: {summary.get('unchanged', 0)}")
-            log_message(f"  - Total checked: {summary.get('checked', 0)}")
-        
-        log_message("="*60)
-        log_message("Sync completed successfully!")
-        log_message("="*60)
-        
+            st.session_state.sync_logs.append(f"\n[{datetime.now().strftime('%H:%M:%S')}] Sync Summary:\n")
+            st.session_state.sync_logs.append(f"  - New complaints: {summary.get('new', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Updated: {summary.get('updated', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Filtered out: {summary.get('filtered_out', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Unchanged: {summary.get('unchanged', 0)}\n")
+            st.session_state.sync_logs.append(f"  - Total checked: {summary.get('checked', 0)}\n")
+        else:
+            st.session_state.sync_logs.append("[WARNING] process() returned None or empty summary\n")
+
+        # Add completion message
+        completion_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sync completed successfully\n{'='*60}\n"
+        st.session_state.sync_logs.append(completion_msg)
+
         st.session_state.last_sync = datetime.now()
         st.session_state.sync_summary = summary
         st.session_state.df = load_data()
         st.session_state.sync_running = False
         return summary
     except Exception as e:
-        import traceback
-        error_msg = f"FATAL ERROR: {str(e)}\nTraceback:\n{traceback.format_exc()}"
-        log_message(error_msg)
+        # Detailed error logging
+        error_msg = f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] FATAL ERROR: {str(e)}\n"
+        error_msg += f"Error type: {type(e).__name__}\n"
+        error_msg += f"Traceback:\n{traceback.format_exc()}\n"
+        st.session_state.sync_logs.append(error_msg)
         st.session_state.sync_running = False
         raise e
-
-def check_authentication() -> bool:
-    """Check if user is authenticated"""
-    if "access_token" in st.session_state and "token_expires_at" in st.session_state:
-        if time.time() < st.session_state.token_expires_at:
-            return True
-    
-    # Try silent auth
-    accounts = app.get_accounts()
-    if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0])
-        if result and "access_token" in result:
-            st.session_state.access_token = result["access_token"]
-            st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-            return True
-    
-    return False
 
 # ==========================================
 # Header Section
@@ -535,160 +591,91 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# Sidebar - Simplified Controls
+# Sidebar - Controls & Filters
 # ==========================================
 with st.sidebar:
     # MAC Products Logo
     logo_path = os.path.join(BASE_DIR, "mac_logo.png")
     if os.path.exists(logo_path):
-        st.image(logo_path, use_container_width=True)
+        st.image(logo_path, width="stretch")
+    else:
+        # Fallback if logo not found
+        st.markdown("""
+        <div style="text-align: center; padding: 20px 0;">
+            <div style="
+                background-color: #1E3A8A;
+                color: white;
+                padding: 20px;
+                border-radius: 10px;
+                margin-bottom: 10px;
+            ">
+                <h1 style="margin: 0; font-size: 24px; font-weight: bold;">MAC PRODUCTS</h1>
+                <p style="margin: 5px 0 0 0; font-size: 12px; opacity: 0.9;">Quality Automation Dashboard</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
+    # Controls section
     st.markdown("---")
-    st.header("Email Sync")
+    st.header("Controls")
     
-    # ============================================
-    # ONE BUTTON TO RULE THEM ALL
-    # ============================================
-    if st.button("Run Email Sync", use_container_width=True, type="primary", key="main_sync_button"):
-        log_message("Run Email Sync button clicked")
-        
-        # Check if authenticated
-        if check_authentication():
-            log_message("User is authenticated, starting sync...")
-            st.session_state.run_sync_after_auth = False
-            with st.spinner("Syncing emails..."):
-                try:
-                    summary = run_sync_process()
-                    st.success("Sync completed!")
-                    st.balloons()
-                    
-                    # Show summary
-                    with st.expander("Sync Summary", expanded=True):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("New", summary.get('new', 0))
-                            st.metric("Updated", summary.get('updated', 0))
-                        with col2:
-                            st.metric("Filtered", summary.get('filtered_out', 0))
-                            st.metric("Unchanged", summary.get('unchanged', 0))
-                except Exception as e:
-                    st.error(f"Sync failed: {str(e)}")
-                    log_message(f"ERROR: {str(e)}")
-        else:
-            # Not authenticated - start device flow
-            log_message("User not authenticated, starting device flow...")
-            st.session_state.auth_in_progress = True
-            st.session_state.run_sync_after_auth = True
-            
-            try:
-                flow = app.initiate_device_flow(scopes=SCOPES)
-                if "user_code" not in flow:
-                    st.error(f"Failed to start authentication: {flow.get('error_description', 'Unknown error')}")
-                    log_message(f"Auth failed: {flow.get('error_description', 'Unknown error')}")
-                else:
-                    st.session_state.device_flow = flow
-                    st.session_state.auth_started = time.time()
-                    log_message(f"Device code generated: {flow['user_code']}")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Authentication error: {str(e)}")
-                log_message(f"Auth error: {str(e)}")
-    
-    # ============================================
-    # Show authentication UI if in progress
-    # ============================================
-    if st.session_state.get('auth_in_progress', False) and "device_flow" in st.session_state:
-        flow = st.session_state.device_flow
-        
-        st.markdown("---")
-        st.warning("Authentication Required")
-        st.markdown("**Follow these steps:**")
-        st.markdown("1. Copy the code below")
-        st.markdown("2. Click 'Open Login Page'")
-        st.markdown("3. Paste the code and sign in")
-        st.markdown("4. Come back and click 'I'm Done'")
-        
-        # Show code in big blue box
-        st.markdown(f'<div class="auth-code">{flow["user_code"]}</div>', unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Copy Code", use_container_width=True):
-                st.write("Copied!")
-        with col2:
-            if st.button("Open Login Page", use_container_width=True):
-                webbrowser.open("https://microsoft.com/devicelogin")
-                st.write("Opened!")
-        
-        # Check if user is done
-        if st.button("I'm Done - Check Authentication", use_container_width=True, type="primary"):
-            with st.spinner("Verifying your sign-in..."):
-                try:
-                    log_message("Checking authentication status...")
-                    result = app.acquire_token_by_device_flow(flow)
-                    
-                    if "access_token" in result:
-                        st.session_state.access_token = result["access_token"]
-                        st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                        st.session_state.pop("device_flow", None)
-                        st.session_state.pop("auth_started", None)
-                        st.session_state.auth_in_progress = False
-                        
-                        log_message("Authentication successful!")
-                        st.success("Authenticated! Starting sync...")
-                        
-                        # Now run the sync
-                        if st.session_state.run_sync_after_auth:
-                            try:
-                                summary = run_sync_process()
-                                st.success("Sync completed!")
-                                st.balloons()
-                                st.session_state.run_sync_after_auth = False
-                            except Exception as e:
-                                st.error(f"Sync failed: {str(e)}")
-                        
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        if "pending" in result.get('error_description', '').lower():
-                            st.warning("Still waiting for sign-in. Complete the steps above, then click 'I'm Done' again.")
-                            log_message("Auth pending - user hasn't completed sign-in yet")
+    # Sync button
+    if st.button("Run Email Sync", use_container_width=True, type="primary"):
+        # Check if we have authentication first
+        if "access_token" in st.session_state and "token_expires_at" in st.session_state:
+            if time.time() < st.session_state.token_expires_at:
+                # We have valid token, proceed with sync
+                with st.spinner("Syncing emails..."):
+                    try:
+                        summary = run_sync_process()
+                        st.success("Sync completed!")
+                        st.balloons()
+
+                        # Show sync summary
+                        with st.expander("Sync Summary", expanded=True):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("New", summary.get('new', 0))
+                                st.metric("Updated", summary.get('updated', 0))
+                            with col2:
+                                st.metric("Filtered", summary.get('filtered_out', 0))
+                                st.metric("Unchanged", summary.get('unchanged', 0))
+
+                            if summary.get('updates_log'):
+                                st.markdown("**Recent Updates:**")
+                                for log in summary['updates_log'][:5]:
+                                    st.text(f"• {log}")
+                    except Exception as e:
+                        st.error(f"Sync failed: {str(e)}")
+
+                        # If authentication error, direct user to restart launcher
+                        if "auth" in str(e).lower() or "token" in str(e).lower():
+                            st.warning("Authentication may have expired.")
+                            st.info("""
+                            **To re-authenticate:**
+                            1. Close this browser tab
+                            2. Double-click `Start_Dashboard.bat` again
+                            3. The launcher will handle re-authentication
+                            """)
                         else:
-                            st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
-                            log_message(f"Auth failed: {result.get('error_description', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-                    log_message(f"Auth error: {str(e)}")
-        
-        # Show timeout
-        if "auth_started" in st.session_state:
-            elapsed = time.time() - st.session_state.auth_started
-            remaining = max(0, 900 - elapsed)
-            if remaining > 0:
-                minutes = int(remaining // 60)
-                seconds = int(remaining % 60)
-                st.caption(f"Code expires in {minutes}m {seconds}s")
+                            st.info("If the issue persists, try restarting the dashboard using `Start_Dashboard.bat`")
             else:
-                st.error("Code expired!")
-                if st.button("Get New Code", use_container_width=True):
-                    st.session_state.pop("device_flow", None)
-                    st.session_state.pop("auth_started", None)
-                    st.session_state.auth_in_progress = False
-                    st.rerun()
+                # Token expired
+                st.warning("Authentication token expired. Please authenticate below.")
+                st.session_state.needs_auth = True
+                st.rerun()
+        else:
+            # No token at all
+            st.warning("Please authenticate with Microsoft first (see below).")
+            st.session_state.needs_auth = True
+            st.rerun()
     
-    # Show auth status when not in progress
-    elif check_authentication():
-        st.success("Authenticated")
-        st.caption("Ready to sync emails")
-    
-    st.markdown("---")
-    
-    # Other controls
+    # Refresh button
     if st.button("Refresh Data", use_container_width=True):
         st.session_state.df = load_data()
         st.rerun()
     
-    # Excel download
+    # Excel download button - exports current dashboard data including any saved changes
     try:
         excel_data = generate_excel_bytes()
         st.download_button(
@@ -697,11 +684,101 @@ with st.sidebar:
             file_name=f"Complaint_Log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            type="secondary"
+            type="primary"
         )
+        st.caption("Click to download Excel with current dashboard data")
     except Exception as e:
         st.error(f"Failed to generate Excel: {e}")
-    
+
+    # Authentication UI (non-blocking)
+    st.markdown("---")
+
+    # Check authentication status
+    has_valid_token = False
+    if "access_token" in st.session_state and "token_expires_at" in st.session_state:
+        if time.time() < st.session_state.token_expires_at:
+            has_valid_token = True
+
+    if not has_valid_token or st.session_state.get('needs_auth', False):
+        st.warning("Microsoft Authentication Required")
+
+        # Try silent authentication first
+        if not has_valid_token:
+            accounts = app.get_accounts()
+            if accounts:
+                result = app.acquire_token_silent(SCOPES, account=accounts[0])
+                if result and "access_token" in result:
+                    st.session_state.access_token = result["access_token"]
+                    st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                    st.session_state.needs_auth = False
+                    st.rerun()
+
+        # Show device code flow
+        if "device_flow" not in st.session_state:
+            try:
+                flow = app.initiate_device_flow(scopes=SCOPES)
+                if "user_code" in flow:
+                    st.session_state.device_flow = flow
+                    st.session_state.auth_started = time.time()
+                else:
+                    st.error(f"Failed to get device code. Error: {flow.get('error_description', 'Unknown error')}")
+            except Exception as e:
+                st.error(f"Device flow initialization failed: {str(e)}")
+
+        if "device_flow" in st.session_state:
+            flow = st.session_state.device_flow
+
+            st.info("To sync emails, authenticate with Microsoft:")
+            st.code(flow['user_code'], language=None)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
+            with col2:
+                if st.button("Check Authentication", use_container_width=True, type="primary", key="auth_check"):
+                    with st.spinner("Checking authentication..."):
+                        try:
+                            st.info("Contacting Microsoft to verify sign-in...")
+                            result = app.acquire_token_by_device_flow(flow)
+                            st.info(f"Got response from Microsoft. Checking for access token...")
+
+                            if "access_token" in result:
+                                st.session_state.access_token = result["access_token"]
+                                st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                                st.session_state.pop("device_flow", None)
+                                st.session_state.pop("auth_started", None)
+                                st.session_state.needs_auth = False
+                                st.success("Authentication successful!")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                if "pending" in result.get('error_description', '').lower():
+                                    st.warning("Still waiting for sign-in. Try again in a moment.")
+                                else:
+                                    st.error(f"Authentication failed: {result.get('error_description', 'Unknown error')}")
+                                    st.error(f"Full result: {result}")
+                        except Exception as e:
+                            st.error(f"Authentication error: {str(e)}")
+                            import traceback
+                            st.code(traceback.format_exc())
+
+            # Show timeout
+            if "auth_started" in st.session_state:
+                elapsed = time.time() - st.session_state.auth_started
+                remaining = max(0, 900 - elapsed)
+                if remaining > 0:
+                    minutes = int(remaining // 60)
+                    seconds = int(remaining % 60)
+                    st.caption(f"Code expires in {minutes}m {seconds}s")
+                else:
+                    if st.button("Get New Code", use_container_width=True):
+                        st.session_state.pop("device_flow", None)
+                        st.session_state.pop("auth_started", None)
+                        st.rerun()
+    else:
+        st.success("Authenticated")
+        st.caption("Ready to sync emails")
+
     st.markdown("---")
     st.header("Filters")
     
@@ -823,10 +900,18 @@ else:
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        st.metric(label="Total Complaints", value=len(df))
+        st.metric(
+            label="Total Complaints",
+            value=len(df),
+            delta=None
+        )
     
     with col2:
-        st.metric(label="Displayed", value=len(filtered_df))
+        st.metric(
+            label="Displayed",
+            value=len(filtered_df),
+            delta=f"{len(filtered_df) - len(df)}" if len(filtered_df) != len(df) else None
+        )
     
     with col3:
         if "Category" in filtered_df.columns:
@@ -847,13 +932,27 @@ else:
     # ==========================================
     # Tabs for Different Views
     # ==========================================
-    tab1, tab2, tab3, tab4 = st.tabs(["Data Table", "Analytics", "Category Breakdown", "System Logs"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Data Table (Editable)", "Analytics", "Category Breakdown", "System Logs"])
     
     with tab1:
         st.subheader("Complaint Records")
         st.info("Click any cell to edit. Changes are saved automatically.")
         
+        # Display columns selector with blue styling
         display_columns = [col for col in filtered_df.columns if not col.startswith("_")]
+        
+        # Custom CSS for blue multiselect tags
+        st.markdown("""
+        <style>
+        /* Change multiselect tag color to blue */
+        span[data-baseweb="tag"] {
+            background-color: #1E3A8A !important;
+        }
+        span[data-baseweb="tag"] span {
+            color: white !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
         
         selected_columns = st.multiselect(
             "Select columns to display",
@@ -866,11 +965,14 @@ else:
             display_df = filtered_df[selected_columns + ["_conversation_id"]].copy()
             
             # Sort options
-            col1, col2 = st.columns([3, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 sort_by = st.selectbox("Sort by", selected_columns, key="sort_by")
             with col2:
                 sort_order = st.selectbox("Order", ["Descending", "Ascending"], key="sort_order")
+            with col3:
+                if st.button("Add New Row", type="secondary"):
+                    st.info("To add a new row, use the email sync feature or contact support.")
             
             if sort_by:
                 ascending = (sort_order == "Ascending")
@@ -879,19 +981,28 @@ else:
             # Create editable dataframe
             edited_df = st.data_editor(
                 display_df.drop(columns=["_conversation_id"]),
-                use_container_width=True,
+                width="stretch",
                 height=500,
+                use_container_width=True,
                 num_rows="fixed",
                 column_config={
                     "Date (ET)": st.column_config.DatetimeColumn(
                         "Date (ET)",
                         format="YYYY-MM-DD HH:mm:ss",
-                        disabled=True
+                        disabled=True  # Don't allow date editing
                     ),
                     "Link": st.column_config.LinkColumn("Link", disabled=True),
-                    "Summary": st.column_config.TextColumn("Summary", width="large", max_chars=500),
+                    "Summary": st.column_config.TextColumn(
+                        "Summary",
+                        width="large",
+                        max_chars=500
+                    ),
                     "P/N": st.column_config.TextColumn("P/N", max_chars=50),
-                    "Category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, required=True),
+                    "Category": st.column_config.SelectboxColumn(
+                        "Category",
+                        options=CATEGORIES,
+                        required=True
+                    ),
                     "Subject": st.column_config.TextColumn("Subject", width="medium"),
                     "Initiated By": st.column_config.TextColumn("Initiated By")
                 },
@@ -904,6 +1015,7 @@ else:
                 col1, col2 = st.columns([1, 4])
                 with col1:
                     if st.button("Save Changes", type="primary"):
+                        # Compare and update changed cells
                         changes_saved = 0
                         for idx in edited_df.index:
                             if idx in display_df.index:
@@ -937,15 +1049,17 @@ else:
                 key="delete_selector"
             )
             
-            if st.button("Delete Selected Row", type="secondary"):
-                conv_id = display_df.iloc[row_to_delete]["_conversation_id"]
-                if delete_row_from_db(conv_id):
-                    st.success("Record deleted!")
-                    st.session_state.df = load_data()
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("Failed to delete")
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if st.button("Delete Selected Row", type="secondary"):
+                    conv_id = display_df.iloc[row_to_delete]["_conversation_id"]
+                    if delete_row_from_db(conv_id):
+                        st.success("Record deleted!")
+                        st.session_state.df = load_data()
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Failed to delete")
             
             # Export filtered data
             st.markdown("---")
@@ -961,6 +1075,7 @@ else:
         st.subheader("Complaint Trends")
         
         if "Date (ET)" in filtered_df.columns and not filtered_df.empty:
+            # Time series chart
             df_with_date = filtered_df.copy()
             df_with_date["Date (ET)"] = pd.to_datetime(df_with_date["Date (ET)"], errors='coerce')
             df_with_date = df_with_date.dropna(subset=["Date (ET)"])
@@ -985,7 +1100,7 @@ else:
                     paper_bgcolor='white',
                     font=dict(color=TEXT_COLOR)
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
                 
                 # Weekly trend
                 df_with_date["Week"] = df_with_date["Date (ET)"].dt.to_period("W").astype(str)
@@ -1005,7 +1120,7 @@ else:
                     paper_bgcolor='white',
                     font=dict(color=TEXT_COLOR)
                 )
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width="stretch")
         else:
             st.info("No date information available for trend analysis")
     
@@ -1016,6 +1131,7 @@ else:
             col1, col2 = st.columns(2)
             
             with col1:
+                # Category distribution pie chart
                 category_counts = filtered_df["Category"].value_counts()
                 fig = px.pie(
                     values=category_counts.values,
@@ -1023,10 +1139,15 @@ else:
                     title="Complaint Distribution by Category",
                     color_discrete_sequence=px.colors.sequential.Blues_r
                 )
-                fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', font=dict(color=TEXT_COLOR))
-                st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    font=dict(color=TEXT_COLOR)
+                )
+                st.plotly_chart(fig, width="stretch")
             
             with col2:
+                # Category bar chart
                 fig = px.bar(
                     x=category_counts.index,
                     y=category_counts.values,
@@ -1034,34 +1155,73 @@ else:
                     title="Category Breakdown",
                     color_discrete_sequence=[PRIMARY_COLOR]
                 )
-                fig.update_layout(showlegend=False, plot_bgcolor='white', paper_bgcolor='white', font=dict(color=TEXT_COLOR))
-                st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(
+                    showlegend=False,
+                    plot_bgcolor='white',
+                    paper_bgcolor='white',
+                    font=dict(color=TEXT_COLOR)
+                )
+                st.plotly_chart(fig, width="stretch")
             
+            # Category table
             st.markdown("**Category Statistics**")
             category_stats = pd.DataFrame({
                 "Category": category_counts.index,
                 "Count": category_counts.values,
                 "Percentage": (category_counts.values / category_counts.sum() * 100).round(2)
             })
-            st.dataframe(category_stats, use_container_width=True, hide_index=True)
+            st.dataframe(category_stats, width="stretch", hide_index=True)
+            
+            # Top part numbers by category
+            if "P/N" in filtered_df.columns:
+                st.markdown("**Top Part Numbers by Category**")
+                selected_cat = st.selectbox("Select category", filtered_df["Category"].unique(), key="cat_pn")
+                cat_data = filtered_df[filtered_df["Category"] == selected_cat]
+                pn_counts = cat_data[cat_data["P/N"] != "No part number provided"]["P/N"].value_counts().head(10)
+                
+                if not pn_counts.empty:
+                    fig = px.bar(
+                        x=pn_counts.values,
+                        y=pn_counts.index,
+                        orientation='h',
+                        labels={"x": "Count", "y": "Part Number"},
+                        title=f"Top 10 P/Ns in {selected_cat}",
+                        color_discrete_sequence=[PRIMARY_COLOR]
+                    )
+                    fig.update_layout(
+                        plot_bgcolor='white',
+                        paper_bgcolor='white',
+                        font=dict(color=TEXT_COLOR)
+                    )
+                    st.plotly_chart(fig, width="stretch")
+                else:
+                    st.info("No part numbers found for this category")
         else:
             st.info("No category information available")
-    
+
     with tab4:
         st.subheader("System Logs - Email Sync Process")
         st.info("Real-time logs from email sync operations. Logs appear when you run 'Run Email Sync'.")
-        
-        col1, col2 = st.columns([1, 4])
+
+        # Controls
+        col1, col2, col3 = st.columns([1, 1, 3])
         with col1:
             if st.button("Clear Logs", type="secondary"):
                 st.session_state.sync_logs = []
                 st.rerun()
-        
+        with col2:
+            auto_scroll = st.checkbox("Auto-scroll", value=True)
+
+        # Display logs
         if st.session_state.sync_logs:
+            # Combine all logs
             all_logs = "".join(st.session_state.sync_logs)
+
+            # Show log count
             log_count = len(st.session_state.sync_logs)
             st.caption(f"Total log entries: {log_count}")
-            
+
+            # Display in a code block with terminal styling
             st.markdown("""
             <style>
             .log-terminal {
@@ -1081,22 +1241,36 @@ else:
             }
             </style>
             """, unsafe_allow_html=True)
-            
+
+            # Show logs in terminal-style container
             st.markdown(f'<div class="log-terminal"><pre>{all_logs}</pre></div>', unsafe_allow_html=True)
-            
+
+            # Download logs button
             st.download_button(
                 label="Download Logs",
                 data=all_logs,
                 file_name=f"sync_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain"
+                mime="text/plain",
+                use_container_width=False
             )
         else:
             st.info("No logs yet. Click 'Run Email Sync' in the sidebar to generate logs.")
+            st.markdown("""
+            **What you'll see here:**
+            - Email sync start/completion timestamps
+            - Messages fetched from Microsoft Graph
+            - Gemini AI processing status
+            - Database update operations
+            - Error messages (if any)
+            - Sync summary statistics
+            """)
 
+# ==========================================
 # Footer
+# ==========================================
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #64748B; padding: 1rem;">
-    <p>MAC Quality Dashboard v2.1 | Powered by Streamlit | © 2025</p>
+    <p>MAC Quality Dashboard v2.0 | Powered by Streamlit | © 2025</p>
 </div>
 """, unsafe_allow_html=True)
