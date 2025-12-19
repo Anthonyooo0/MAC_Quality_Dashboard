@@ -208,6 +208,8 @@ if 'sync_logs' not in st.session_state:
     st.session_state.sync_logs = []
 if 'auth_in_progress' not in st.session_state:
     st.session_state.auth_in_progress = False
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 
 # ==========================================
 # Helper Functions
@@ -506,19 +508,31 @@ def run_sync_process():
 
 def check_authentication() -> bool:
     """Check if user is authenticated"""
+    # First check: Valid token in session state
     if "access_token" in st.session_state and "token_expires_at" in st.session_state:
         if time.time() < st.session_state.token_expires_at:
+            log_message(f"Found valid token in session (expires at {datetime.fromtimestamp(st.session_state.token_expires_at).strftime('%H:%M:%S')})")
             return True
+        else:
+            log_message("Token in session expired, removing...")
+            st.session_state.pop("access_token", None)
+            st.session_state.pop("token_expires_at", None)
     
-    # Try silent auth
+    # Second check: Try silent auth from MSAL cache
     accounts = app.get_accounts()
     if accounts:
+        log_message(f"Found {len(accounts)} cached account(s), attempting silent token acquisition...")
         result = app.acquire_token_silent(SCOPES, account=accounts[0])
         if result and "access_token" in result:
+            log_message("Successfully acquired token silently from MSAL cache")
             st.session_state.access_token = result["access_token"]
             st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+            st.session_state.authenticated = True
             return True
+        else:
+            log_message("Silent token acquisition failed")
     
+    log_message("No valid authentication found")
     return False
 
 # ==========================================
@@ -604,14 +618,19 @@ with st.sidebar:
                     if "access_token" in result:
                         st.session_state.access_token = result["access_token"]
                         st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+                        st.session_state.authenticated = True
                         st.session_state.pop("device_flow", None)
                         st.session_state.pop("auth_started", None)
                         st.session_state.auth_in_progress = False
                         
                         log_message("Authentication successful!")
-                        st.success("Authenticated! You can now run sync.")
-                        time.sleep(2)
-                        st.rerun()
+                        log_message(f"Token expires at: {datetime.fromtimestamp(st.session_state.token_expires_at).strftime('%Y-%m-%d %H:%M:%S')}")
+                        log_message(f"Access token stored in session state")
+                        st.success("Authenticated successfully!")
+                        
+                        # Add a button to continue
+                        if st.button("Continue to Dashboard", use_container_width=True, type="primary"):
+                            st.rerun()
                     else:
                         if "pending" in result.get('error_description', '').lower():
                             st.warning("Still waiting. Complete sign-in, then click 'Check Authentication' again.")
@@ -647,7 +666,14 @@ with st.sidebar:
     st.subheader("Step 2: Run Sync")
     
     if st.button("Run Email Sync", use_container_width=True, type="primary", key="sync_button", disabled=not check_authentication()):
+        log_message("="*60)
         log_message("Run Email Sync button clicked")
+        log_message(f"Authentication status: {check_authentication()}")
+        log_message(f"Access token in session: {'access_token' in st.session_state}")
+        log_message(f"Token expiry in session: {'token_expires_at' in st.session_state}")
+        if "token_expires_at" in st.session_state:
+            log_message(f"Token expires at: {datetime.fromtimestamp(st.session_state.token_expires_at).strftime('%Y-%m-%d %H:%M:%S')}")
+        log_message("="*60)
         
         with st.spinner("Syncing emails from Microsoft..."):
             try:
