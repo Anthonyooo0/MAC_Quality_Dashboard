@@ -604,9 +604,7 @@ with st.sidebar:
             if st.button("Copy Code", use_container_width=True):
                 st.write("Code copied!")
         with col2:
-            if st.button("Open Login Page", use_container_width=True):
-                webbrowser.open("https://microsoft.com/devicelogin")
-                st.write("Page opened!")
+            st.link_button("Open Login Page", "https://microsoft.com/devicelogin", use_container_width=True)
         
         # Check authentication button
         if st.button("Check Authentication", use_container_width=True, type="primary"):
