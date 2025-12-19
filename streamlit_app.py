@@ -590,6 +590,10 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# Show sync status banner if sync is running
+if st.session_state.get('sync_running', False):
+    st.info("🔄 **EMAIL SYNC IN PROGRESS** - Processing emails... Check System Logs tab for live updates")
+
 # ==========================================
 # Sidebar - Controls & Filters
 # ==========================================
@@ -773,23 +777,34 @@ with st.sidebar:
         # Auto-run sync if flag is set (after fresh authentication)
         if st.session_state.get('auto_run_sync', False):
             st.session_state.auto_run_sync = False  # Clear flag
-            with st.spinner("🔄 Auto-starting email sync..."):
-                try:
-                    summary = run_sync_process()
-                    st.success("✅ Email sync completed!")
-                    st.balloons()
+            st.info("🔄 **SYNC RUNNING** - Processing emails from Microsoft Graph...")
 
-                    # Show sync summary
-                    with st.expander("Sync Summary", expanded=True):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("New", summary.get('new', 0))
-                            st.metric("Updated", summary.get('updated', 0))
-                        with col2:
-                            st.metric("Filtered", summary.get('filtered_out', 0))
-                            st.metric("Unchanged", summary.get('unchanged', 0))
-                except Exception as e:
-                    st.error(f"❌ Auto-sync failed: {str(e)}")
+            # Show live logs as sync runs
+            log_placeholder = st.empty()
+
+            try:
+                summary = run_sync_process()
+
+                # Clear the log placeholder and show completion
+                log_placeholder.empty()
+                st.success("✅ **EMAIL SYNC COMPLETED!**")
+                st.balloons()
+
+                # Show sync summary
+                with st.expander("📊 Sync Summary", expanded=True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("New", summary.get('new', 0))
+                        st.metric("Updated", summary.get('updated', 0))
+                    with col2:
+                        st.metric("Filtered", summary.get('filtered_out', 0))
+                        st.metric("Unchanged", summary.get('unchanged', 0))
+
+                # Show System Logs link
+                st.info("📄 Check the **System Logs** tab below for detailed processing logs")
+            except Exception as e:
+                log_placeholder.empty()
+                st.error(f"❌ Auto-sync failed: {str(e)}")
 
     st.markdown("---")
     st.header("Filters")
