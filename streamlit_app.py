@@ -153,6 +153,15 @@ st.markdown(f"""
         box-shadow: 0 4px 8px rgba(30, 58, 138, 0.3);
     }}
     
+    /* Multiselect tags - MAC Blue instead of red */
+    .stMultiSelect [data-baseweb="tag"] {{
+        background-color: {PRIMARY_COLOR} !important;
+    }}
+    
+    .stMultiSelect [data-baseweb="tag"] span {{
+        color: white !important;
+    }}
+    
     .stTabs [data-baseweb="tab-list"] {{
         gap: 8px;
     }}
