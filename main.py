@@ -131,43 +131,30 @@ app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
 
 # ====================
 # FIXED AUTHENTICATION FUNCTION
+# Replace the get_token() function in your main.py with this version
 # ====================
 
 def get_token():
     """
-    Get token with proper error handling and clear messaging.
-    This version properly handles the authentication state.
+    Get token from session state (authentication handled in streamlit_app.py sidebar).
+    Returns token if valid, otherwise raises error.
     """
-    # First check: Do we have a valid token in session state?
+    # Check if we have a valid token in session state
     if "access_token" in st.session_state and "token_expires_at" in st.session_state:
         if time.time() < st.session_state.token_expires_at:
-            print(f"[AUTH] Using cached token from session state")
             return st.session_state.access_token
-        else:
-            print(f"[AUTH] Cached token expired, attempting refresh...")
-    
-    # Second check: Try to get token silently from MSAL cache
+
+    # Try silent authentication with cached account
     accounts = app.get_accounts()
     if accounts:
-        print(f"[AUTH] Found {len(accounts)} cached account(s), attempting silent token acquisition...")
         result = app.acquire_token_silent(SCOPES, account=accounts[0])
         if result and "access_token" in result:
-            print(f"[AUTH] Successfully acquired token silently")
-            # Store in session state for future use
             st.session_state.access_token = result["access_token"]
             st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
             return result["access_token"]
-        else:
-            print(f"[AUTH] Silent token acquisition failed: {result.get('error_description', 'Unknown error')}")
-    else:
-        print(f"[AUTH] No cached accounts found")
-    
-    # If we get here, we don't have a valid token
-    print(f"[AUTH] No valid token available - user needs to authenticate")
-    raise RuntimeError(
-        "Authentication required. Please complete the authentication in the sidebar first, "
-        "then click 'Run Email Sync' again."
-    )
+
+    # No valid token - authentication required
+    raise RuntimeError("Authentication required. Please authenticate in the sidebar.")
 
 SUBJECT_PREFIXES = ("re:", "fw:", "fwd:", "sv:", "答复:", "回复:", "aw:", "wg:", "r:")
 
@@ -881,19 +868,19 @@ def fetch_earliest_in_conversation(conversation_id: str, mailbox: str = MAILBOX)
 # [GEMINI]
 def gemini_client():
     if not GEMINI_API_KEY:
-        st.warning("⚠️ GEMINI_API_KEY not set. AI email processing disabled.")
+        st.warning("GEMINI_API_KEY not set. AI email processing disabled.")
         return None
 
     # Show debug info to user
     key_preview = _mask_key(GEMINI_API_KEY)
-    st.info(f"🔑 Loading API key from: **{CONFIG_SOURCE}** (ends with: ...{GEMINI_API_KEY[-4:] if len(GEMINI_API_KEY) >= 4 else 'N/A'})")
+    st.info(f"Loading API key from: **{CONFIG_SOURCE}** (ends with: ...{GEMINI_API_KEY[-4:] if len(GEMINI_API_KEY) >= 4 else 'N/A'})")
     print(f"[CONFIG] Loaded GEMINI_API_KEY from {CONFIG_SOURCE}:", key_preview)
 
     if not _gemini_preflight(genai, GEMINI_API_KEY, "gemini-3-flash-preview"):
-        st.warning("⚠️ Gemini API unavailable. AI email processing disabled. Dashboard will still work for manual data entry.")
+        st.warning("Gemini API unavailable. AI email processing disabled. Dashboard will still work for manual data entry.")
         return None
 
-    st.success("✅ Gemini API connected successfully!")
+    st.success("Gemini API connected successfully!")
     genai.configure(api_key=GEMINI_API_KEY)
     return genai.GenerativeModel(
         model_name="gemini-3-flash-preview",
@@ -1173,6 +1160,9 @@ def update_start_date_env():
         # For cloud deployment, just log it
         print(f"[INFO] START_DATE updated to {now_iso} (in-memory only, .env not writable)")
 
+# REMOVED: All Tkinter functions (update_complaint_log, show_success_popup)
+# These are replaced by Streamlit UI in streamlit_app.py
+
 if __name__ == "__main__":
     t0 = time.time()
     try:
@@ -1183,4 +1173,3 @@ if __name__ == "__main__":
     finally:
         dt = time.time() - t0
         print(f"[DONE] Elapsed: {dt:.1f}s")
-
