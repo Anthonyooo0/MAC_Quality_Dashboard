@@ -663,12 +663,9 @@ with st.sidebar:
                 # Token expired
                 st.warning("Authentication token expired. Please authenticate below.")
                 st.session_state.needs_auth = True
-                st.rerun()
         else:
             # No token at all
             st.warning("Please authenticate with Microsoft first (see below).")
-            st.session_state.needs_auth = True
-            st.rerun()
     
     # Refresh button
     if st.button("Refresh Data", use_container_width=True):
@@ -701,17 +698,6 @@ with st.sidebar:
 
     if not has_valid_token or st.session_state.get('needs_auth', False):
         st.warning("Microsoft Authentication Required")
-
-        # Try silent authentication first
-        if not has_valid_token:
-            accounts = app.get_accounts()
-            if accounts:
-                result = app.acquire_token_silent(SCOPES, account=accounts[0])
-                if result and "access_token" in result:
-                    st.session_state.access_token = result["access_token"]
-                    st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
-                    st.session_state.needs_auth = False
-                    st.rerun()
 
         # Show device code flow
         if "device_flow" not in st.session_state:
