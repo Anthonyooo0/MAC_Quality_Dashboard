@@ -280,6 +280,42 @@ def delete_custom_column(col_name: str) -> bool:
         st.error(f"Failed to delete column: {e}")
         return False
 
+def get_setting(key: str, default: str = "") -> str:
+    """Get a setting value from the database"""
+    try:
+        con = sqlite3.connect(DB_PATH)
+        cur = con.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        cur.execute("SELECT value FROM settings WHERE key=?", (key,))
+        row = cur.fetchone()
+        con.close()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+def set_setting(key: str, value: str) -> bool:
+    """Save a setting value to the database"""
+    try:
+        con = sqlite3.connect(DB_PATH)
+        cur = con.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        con.commit()
+        con.close()
+        return True
+    except Exception:
+        return False
+
 def update_cell_in_db(conversation_id: str, col_name: str, new_value: str):
     """Update a single cell in the database"""
     try:
@@ -486,15 +522,20 @@ def run_sync_process():
         log_message("="*60)
         log_message("Starting Email Sync Process")
         log_message("="*60)
-        
+
+        # Get the last sync date from settings (defaults to 2025-11-14 for initial catch-up)
+        from datetime import timezone
+        last_sync_date = get_setting("last_sync_date", "2025-11-14T00:00:00Z")
+        log_message(f"Syncing emails since: {last_sync_date}")
+
         log_message("Calling process() function from main.py...")
         log_message("This may take 1-3 minutes depending on email volume...")
-        
-        # Call the main process function
-        summary = process()
-        
+
+        # Call the main process function with the last sync date
+        summary = process(override_start_date=last_sync_date)
+
         log_message("process() completed successfully")
-        
+
         if summary:
             log_message("\nSync Summary:")
             log_message(f"  - New complaints: {summary.get('new', 0)}")
@@ -505,18 +546,23 @@ def run_sync_process():
         else:
             log_message("WARNING: process() returned None or empty summary")
             summary = {"new": 0, "updated": 0, "filtered_out": 0, "unchanged": 0, "checked": 0, "updates_log": []}
-        
+
+        # Update last_sync_date to NOW so next sync only gets new emails
+        new_sync_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        set_setting("last_sync_date", new_sync_date)
+        log_message(f"Updated last sync date to: {new_sync_date}")
+
         log_message("="*60)
         log_message("Sync completed successfully!")
         log_message("="*60)
-        
+
         st.session_state.last_sync = datetime.now()
         st.session_state.sync_summary = summary
-        
+
         log_message("Loading updated data from database...")
         st.session_state.df = load_data()
         log_message("Data loaded successfully")
-        
+
         st.session_state.sync_running = False
         return summary
     except Exception as e:
@@ -735,7 +781,26 @@ with st.sidebar:
         )
     except Exception as e:
         st.error(f"Failed to generate Excel: {e}")
-    
+
+    # Editable sync start date
+    last_sync_date = get_setting("last_sync_date", "2025-11-14T00:00:00Z")
+    try:
+        current_date = datetime.strptime(last_sync_date[:10], "%Y-%m-%d").date()
+    except:
+        current_date = datetime(2025, 11, 14).date()
+
+    new_date = st.date_input(
+        "Next sync starts from",
+        value=current_date,
+        help="Change this to re-sync emails from a different date"
+    )
+
+    # Save if date changed
+    if new_date != current_date:
+        new_date_iso = new_date.strftime("%Y-%m-%dT00:00:00Z")
+        set_setting("last_sync_date", new_date_iso)
+        st.rerun()
+
     st.markdown("---")
     st.header("Filters")
     
