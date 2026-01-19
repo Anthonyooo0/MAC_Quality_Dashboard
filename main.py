@@ -37,7 +37,7 @@ try:
     CLIENT_ID = st.secrets["credentials"]["CLIENT_ID"]
     CLIENT_SECRET = st.secrets["credentials"].get("CLIENT_SECRET", "")
     MAILBOX = st.secrets["credentials"]["MAILBOX"]
-    START_DATE = st.secrets["credentials"].get("START_DATE", "2025-01-01T00:00:00Z")
+    START_DATE = st.secrets["credentials"].get("START_DATE", "2016-01-01T00:00:00Z")
     PN_MASTER_PATH = st.secrets["credentials"].get("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
     CONFIG_SOURCE = "Streamlit Secrets"
 except (KeyError, FileNotFoundError, AttributeError):
@@ -51,7 +51,7 @@ except (KeyError, FileNotFoundError, AttributeError):
     TENANT_ID = os.getenv("TENANT_ID")
     CLIENT_ID = os.getenv("CLIENT_ID")
     CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
-    START_DATE = os.getenv("START_DATE", "2025-01-01T00:00:00Z")
+    START_DATE = os.getenv("START_DATE", "2016-01-01T00:00:00Z")
     MAILBOX = os.getenv("MAILBOX", "me")
     PN_MASTER_PATH = os.getenv("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
     CONFIG_SOURCE = ".env file"
