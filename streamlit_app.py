@@ -547,10 +547,14 @@ def run_sync_process():
             log_message("WARNING: process() returned None or empty summary")
             summary = {"new": 0, "updated": 0, "filtered_out": 0, "unchanged": 0, "checked": 0, "updates_log": []}
 
-        # Update last_sync_date to NOW so next sync only gets new emails
-        new_sync_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        set_setting("last_sync_date", new_sync_date)
-        log_message(f"Updated last sync date to: {new_sync_date}")
+        # Only update last_sync_date if we actually checked emails
+        # This prevents gaps if sync fails or returns 0 emails
+        if summary.get('checked', 0) > 0:
+            new_sync_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            set_setting("last_sync_date", new_sync_date)
+            log_message(f"Updated last sync date to: {new_sync_date}")
+        else:
+            log_message("WARNING: No emails checked - keeping previous sync date to avoid gaps")
 
         log_message("="*60)
         log_message("Sync completed successfully!")

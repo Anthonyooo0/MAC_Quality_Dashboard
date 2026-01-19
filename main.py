@@ -1124,9 +1124,12 @@ def process(override_start_date=None):
     
     if summary["excel_written"]:
         export_to_excel()
-    
-    update_start_date_env()
-    
+
+    # Only update START_DATE if we actually processed emails
+    # This prevents gaps if sync fails or returns 0 emails
+    if checked > 0:
+        update_start_date_env()
+
     return summary
 
 def update_start_date_env():
