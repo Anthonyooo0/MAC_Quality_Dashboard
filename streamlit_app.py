@@ -523,9 +523,9 @@ def run_sync_process():
         log_message("Starting Email Sync Process")
         log_message("="*60)
 
-        # Get the last sync date from settings (defaults to 2025-11-14 for initial catch-up)
+        # Get the last sync date from settings (defaults to 2016-01-01 for full history sync)
         from datetime import timezone
-        last_sync_date = get_setting("last_sync_date", "2025-11-14T00:00:00Z")
+        last_sync_date = get_setting("last_sync_date", "2016-01-01T00:00:00Z")
         log_message(f"Syncing emails since: {last_sync_date}")
 
         log_message("Calling process() function from main.py...")
@@ -787,11 +787,11 @@ with st.sidebar:
         st.error(f"Failed to generate Excel: {e}")
 
     # Editable sync start date
-    last_sync_date = get_setting("last_sync_date", "2025-11-14T00:00:00Z")
+    last_sync_date = get_setting("last_sync_date", "2016-01-01T00:00:00Z")
     try:
         current_date = datetime.strptime(last_sync_date[:10], "%Y-%m-%d").date()
     except:
-        current_date = datetime(2025, 11, 14).date()
+        current_date = datetime(2016, 1, 1).date()
 
     new_date = st.date_input(
         "Next sync starts from",
