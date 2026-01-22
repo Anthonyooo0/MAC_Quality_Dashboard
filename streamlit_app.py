@@ -754,28 +754,28 @@ with st.sidebar:
             try:
                 # Use st.status() for real-time progress updates
                 with st.status("Syncing emails...", expanded=True) as status:
-                    status.write("🔄 Starting sync process...")
+                    status.write("Starting sync process...")
 
                     # Get sync date
                     from datetime import timezone
                     last_sync_date = get_setting("last_sync_date", "2016-01-01T00:00:00Z")
-                    status.write(f"📅 Syncing emails since: {last_sync_date}")
+                    status.write(f"Syncing emails since: {last_sync_date}")
                     log_message(f"Syncing emails since: {last_sync_date}")
 
-                    status.write("📧 Fetching emails from Microsoft Graph API...")
-                    status.write("⏳ This may take several minutes for large date ranges...")
+                    status.write("Fetching emails from Microsoft Graph API...")
+                    status.write("This may take several minutes for large date ranges...")
 
                     summary = run_sync_process()
 
                     # Show results in status
                     if summary:
-                        status.write(f"✅ Checked: {summary.get('checked', 0)} emails")
-                        status.write(f"🆕 New complaints: {summary.get('new', 0)}")
-                        status.write(f"🔄 Updated: {summary.get('updated', 0)}")
-                        status.write(f"🚫 Filtered out: {summary.get('filtered_out', 0)}")
-                        status.update(label="✅ Sync completed!", state="complete", expanded=True)
+                        status.write(f"Checked: {summary.get('checked', 0)} emails")
+                        status.write(f"New complaints: {summary.get('new', 0)}")
+                        status.write(f"Updated: {summary.get('updated', 0)}")
+                        status.write(f"Filtered out: {summary.get('filtered_out', 0)}")
+                        status.update(label="Sync completed!", state="complete", expanded=True)
                     else:
-                        status.update(label="⚠️ Sync completed with no results", state="complete", expanded=True)
+                        status.update(label="Sync completed with no results", state="complete", expanded=True)
 
                 # Store summary in session state to display it
                 st.session_state.show_sync_report = True
