@@ -877,6 +877,34 @@ df = st.session_state.df
 
 if df.empty:
     st.info("No complaints found. Click 'Run Email Sync' to fetch data.")
+
+    # Show System Logs even when no data - so users can see what happened during sync
+    st.markdown("---")
+    st.subheader("System Logs")
+    st.info("Real-time logs from email sync operations.")
+
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("Clear Logs", type="secondary", key="clear_logs_empty"):
+            st.session_state.sync_logs = []
+            st.rerun()
+
+    if st.session_state.sync_logs:
+        all_logs = "".join(st.session_state.sync_logs)
+        log_count = len(st.session_state.sync_logs)
+        st.caption(f"Total log entries: {log_count}")
+
+        st.text_area("Logs", value=all_logs, height=400, disabled=True, label_visibility="collapsed")
+
+        st.download_button(
+            label="Download Logs",
+            data=all_logs,
+            file_name=f"sync_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain",
+            key="download_logs_empty"
+        )
+    else:
+        st.info("No logs yet. Click 'Run Email Sync' to see what happens during the sync process.")
 else:
     # Apply filters
     filtered_df = df.copy()
