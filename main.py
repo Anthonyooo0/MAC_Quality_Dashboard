@@ -37,7 +37,7 @@ try:
     CLIENT_ID = st.secrets["credentials"]["CLIENT_ID"]
     CLIENT_SECRET = st.secrets["credentials"].get("CLIENT_SECRET", "")
     MAILBOX = st.secrets["credentials"]["MAILBOX"]
-    START_DATE = st.secrets["credentials"].get("START_DATE", "2016-01-01T00:00:00Z")
+    START_DATE = st.secrets["credentials"].get("START_DATE", "2025-01-01T00:00:00Z")
     PN_MASTER_PATH = st.secrets["credentials"].get("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
     CONFIG_SOURCE = "Streamlit Secrets"
 except (KeyError, FileNotFoundError, AttributeError):
@@ -51,7 +51,7 @@ except (KeyError, FileNotFoundError, AttributeError):
     TENANT_ID = os.getenv("TENANT_ID")
     CLIENT_ID = os.getenv("CLIENT_ID")
     CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
-    START_DATE = os.getenv("START_DATE", "2016-01-01T00:00:00Z")
+    START_DATE = os.getenv("START_DATE", "2025-01-01T00:00:00Z")
     MAILBOX = os.getenv("MAILBOX", "me")
     PN_MASTER_PATH = os.getenv("PN_MASTER_PATH", os.path.join(BASE_DIR, "pn_master.xlsx"))
     CONFIG_SOURCE = ".env file"
@@ -950,7 +950,19 @@ CATEGORIES = [
 ]
 
 # [MAIN PROCESS FUNCTION]
-def process(override_start_date=None):
+def process(override_start_date=None, log_callback=None):
+    """
+    Main sync process.
+    log_callback: optional function(msg) to receive log messages for UI display
+    """
+    def log(msg):
+        print(msg)
+        if log_callback:
+            try:
+                log_callback(msg)
+            except:
+                pass  # Don't fail if callback errors
+
     init_db()
     checked = 0
     new_threads = 0
@@ -960,23 +972,62 @@ def process(override_start_date=None):
     updates_log = []
     latest_msg_by_conv = {}
     first_msg_by_conv = {}
-    
-    print("[INFO] Fetching messages from Graph...")
+
     start_iso = override_start_date or START_DATE
+    log(f"[INFO] Using start date: {start_iso}")
+    log(f"[INFO] Mailbox: {MAILBOX}")
+    log("[INFO] Fetching messages from Graph API...")
+
+    skipped_no_conv = 0
+    skipped_no_rdt = 0
+
     for msg in fetch_messages_since(start_iso, MAILBOX):
         checked += 1
+        if checked <= 5:
+            # Log first few messages for debugging
+            log(f"[DEBUG] Email {checked}: subject='{msg.get('subject', '')[:50]}', date={msg.get('receivedDateTime', 'N/A')}")
+        elif checked == 6:
+            log("[DEBUG] ... (suppressing further individual email logs)")
+        elif checked % 100 == 0:
+            # Log progress every 100 emails
+            log(f"[INFO] Processed {checked} emails so far...")
+
         conv_id = msg.get("conversationId")
         rdt = msg.get("receivedDateTime")
-        if not conv_id or not rdt:
+        if not conv_id:
+            skipped_no_conv += 1
+            continue
+        if not rdt:
+            skipped_no_rdt += 1
             continue
         if conv_id not in first_msg_by_conv:
             first_msg_by_conv[conv_id] = msg
         prev = latest_msg_by_conv.get(conv_id)
         if (not prev) or (rdt > prev.get("receivedDateTime", "")):
             latest_msg_by_conv[conv_id] = msg
-    
-    print(f"[INFO] Checked {checked} messages. Found {len(latest_msg_by_conv)} unique threads.")
+
+    log(f"[INFO] Fetched {checked} messages from Graph API")
+    if skipped_no_conv > 0:
+        log(f"[WARN] Skipped {skipped_no_conv} messages with no conversationId")
+    if skipped_no_rdt > 0:
+        log(f"[WARN] Skipped {skipped_no_rdt} messages with no receivedDateTime")
+    log(f"[INFO] Found {len(latest_msg_by_conv)} unique conversation threads")
+
+    if len(latest_msg_by_conv) == 0:
+        log("[WARN] No conversations found - nothing to process!")
+        return {
+            "new": 0,
+            "updated": 0,
+            "filtered_out": 0,
+            "unchanged": 0,
+            "checked": checked,
+            "excel_written": False,
+            "updates_log": [],
+        }
+
+    log("[INFO] Initializing Gemini AI model...")
     model = gemini_client()
+    log("[INFO] Processing conversations through AI filter...")
     
     for conv_id, msg in latest_msg_by_conv.items():
         subject_raw = msg.get("subject") or ""

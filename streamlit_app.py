@@ -515,24 +515,35 @@ def log_message(msg: str):
     st.session_state.sync_logs.append(log_entry)
     print(log_entry.strip())
 
-def run_sync_process():
-    """Run the email sync process (main.py process() function)"""
+def run_sync_process(ui_log_callback=None):
+    """Run the email sync process (main.py process() function)
+    ui_log_callback: optional function(msg) to show real-time logs in UI
+    """
+    def combined_log(msg):
+        """Log to both session state and UI callback"""
+        log_message(msg)
+        if ui_log_callback:
+            try:
+                ui_log_callback(msg)
+            except:
+                pass
+
     try:
         st.session_state.sync_running = True
-        log_message("="*60)
-        log_message("Starting Email Sync Process")
-        log_message("="*60)
+        combined_log("="*60)
+        combined_log("Starting Email Sync Process")
+        combined_log("="*60)
 
-        # Get the last sync date from settings (defaults to 2016-01-01 for full history sync)
+        # Get the last sync date from settings (defaults to 2025-01-01)
         from datetime import timezone
-        last_sync_date = get_setting("last_sync_date", "2016-01-01T00:00:00Z")
-        log_message(f"Syncing emails since: {last_sync_date}")
+        last_sync_date = get_setting("last_sync_date", "2025-01-01T00:00:00Z")
+        combined_log(f"Syncing emails since: {last_sync_date}")
 
-        log_message("Calling process() function from main.py...")
-        log_message("This may take 1-3 minutes depending on email volume...")
+        combined_log("Calling process() function from main.py...")
+        combined_log("This may take 1-3 minutes depending on email volume...")
 
-        # Call the main process function with the last sync date
-        summary = process(override_start_date=last_sync_date)
+        # Call the main process function with the last sync date and UI callback
+        summary = process(override_start_date=last_sync_date, log_callback=ui_log_callback)
 
         log_message("process() completed successfully")
 
@@ -756,23 +767,20 @@ with st.sidebar:
                 with st.status("Syncing emails...", expanded=True) as status:
                     status.write("Starting sync process...")
 
-                    # Get sync date
-                    from datetime import timezone
-                    last_sync_date = get_setting("last_sync_date", "2016-01-01T00:00:00Z")
-                    status.write(f"Syncing emails since: {last_sync_date}")
-                    log_message(f"Syncing emails since: {last_sync_date}")
+                    # Create callback to show logs in real-time
+                    def ui_log(msg):
+                        status.write(msg)
 
-                    status.write("Fetching emails from Microsoft Graph API...")
-                    status.write("This may take several minutes for large date ranges...")
+                    # Run sync with UI callback for real-time logs
+                    summary = run_sync_process(ui_log_callback=ui_log)
 
-                    summary = run_sync_process()
-
-                    # Show results in status
+                    # Show final results
                     if summary:
-                        status.write(f"Checked: {summary.get('checked', 0)} emails")
-                        status.write(f"New complaints: {summary.get('new', 0)}")
-                        status.write(f"Updated: {summary.get('updated', 0)}")
-                        status.write(f"Filtered out: {summary.get('filtered_out', 0)}")
+                        status.write("---")
+                        status.write(f"FINAL: Checked {summary.get('checked', 0)} emails")
+                        status.write(f"FINAL: New complaints: {summary.get('new', 0)}")
+                        status.write(f"FINAL: Updated: {summary.get('updated', 0)}")
+                        status.write(f"FINAL: Filtered out: {summary.get('filtered_out', 0)}")
                         status.update(label="Sync completed!", state="complete", expanded=True)
                     else:
                         status.update(label="Sync completed with no results", state="complete", expanded=True)
@@ -809,11 +817,11 @@ with st.sidebar:
         st.error(f"Failed to generate Excel: {e}")
 
     # Editable sync start date
-    last_sync_date = get_setting("last_sync_date", "2016-01-01T00:00:00Z")
+    last_sync_date = get_setting("last_sync_date", "2025-01-01T00:00:00Z")
     try:
         current_date = datetime.strptime(last_sync_date[:10], "%Y-%m-%d").date()
     except:
-        current_date = datetime(2016, 1, 1).date()
+        current_date = datetime(2025, 1, 1).date()
 
     new_date = st.date_input(
         "Next sync starts from",
