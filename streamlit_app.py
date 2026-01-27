@@ -534,16 +534,17 @@ def run_sync_process(ui_log_callback=None):
         combined_log("Starting Email Sync Process")
         combined_log("="*60)
 
-        # Get the last sync date from settings (defaults to 2025-01-01)
-        from datetime import timezone
-        last_sync_date = get_setting("last_sync_date", "2025-01-01T00:00:00Z")
-        combined_log(f"Syncing emails since: {last_sync_date}")
+        # Use START_DATE from secrets/env directly (like the original dashboard)
+        # This ensures we always sync from the configured start date
+        from main import START_DATE
+        combined_log(f"Syncing emails since: {START_DATE}")
 
         combined_log("Calling process() function from main.py...")
         combined_log("This may take 1-3 minutes depending on email volume...")
 
-        # Call the main process function with the last sync date and UI callback
-        summary = process(override_start_date=last_sync_date, log_callback=ui_log_callback)
+        # Call the main process function WITHOUT override - uses START_DATE from main.py
+        # This matches the original dashboard.py behavior
+        summary = process(log_callback=ui_log_callback)
 
         log_message("process() completed successfully")
 
@@ -558,14 +559,8 @@ def run_sync_process(ui_log_callback=None):
             log_message("WARNING: process() returned None or empty summary")
             summary = {"new": 0, "updated": 0, "filtered_out": 0, "unchanged": 0, "checked": 0, "updates_log": []}
 
-        # Only update last_sync_date if we actually checked emails
-        # This prevents gaps if sync fails or returns 0 emails
-        if summary.get('checked', 0) > 0:
-            new_sync_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            set_setting("last_sync_date", new_sync_date)
-            log_message(f"Updated last sync date to: {new_sync_date}")
-        else:
-            log_message("WARNING: No emails checked - keeping previous sync date to avoid gaps")
+        # Note: We don't update last_sync_date - each sync uses START_DATE from secrets
+        # This matches the original dashboard.py behavior
 
         log_message("="*60)
         log_message("Sync completed successfully!")
