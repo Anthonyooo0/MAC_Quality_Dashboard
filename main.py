@@ -214,26 +214,29 @@ def contains_keywords(text: str) -> bool:
     low = text.lower()
     return any(kw.lower() in low for kw in KEYWORDS)
 
-def is_noise_email(subject: str, sender: str, body: str) -> bool:
+def is_noise_email(subject: str, sender: str) -> bool:
+    """
+    Filter out obvious noise emails. Let Gemini decide if something is a complaint.
+    Only filter: blocked senders, blocked domains, blocked subject phrases.
+    Do NOT filter based on keywords - let Gemini AI make that decision.
+    """
     s = (subject or "").lower()
-    b = (body or "").lower()
     sender = (sender or "").lower()
 
+    # Block specific senders
     if sender in SENDER_BLOCKLIST:
         return True
+
+    # Block specific domains
     dom = sender.split("@")[-1] if "@" in sender else ""
     if dom in DOMAIN_BLOCKLIST:
         return True
 
+    # Block specific subject phrases (newsletters, training, out of office, etc.)
     if any(phrase in s for phrase in SUBJECT_BLOCK_PHRASES):
         return True
 
-    text = f"{s} {b}"
-    has_keyword = any(kw.lower() in text for kw in KEYWORDS)
-    has_strong = any(sig in text for sig in STRONG_SIGNALS)
-    if not has_keyword and not has_strong:
-        return True
-
+    # Let Gemini decide if it's a complaint - don't filter by keywords
     return False
 
 # [INCLUDE ALL YOUR DATETIME AND ORIGIN EXTRACTION FUNCTIONS]
@@ -1050,7 +1053,7 @@ def process(override_start_date=None, log_callback=None):
                 unchanged += 1
                 continue
         
-        if is_noise_email(subject_clean, sender_email, latest_reply):
+        if is_noise_email(subject_clean, sender_email):
             if existing_by_conv:
                 touch_conversation(conv_id, rdt)
             filtered_noise += 1
