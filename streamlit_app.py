@@ -550,11 +550,12 @@ def run_sync_process(ui_log_callback=None):
 
         if summary:
             log_message("\nSync Summary:")
+            log_message(f"  - Total emails checked: {summary.get('checked', 0)}")
+            log_message(f"  - Filtered (no keywords): {summary.get('filtered_noise', 0)}")
+            log_message(f"  - Filtered (Gemini said not complaint): {summary.get('filtered_not_complaint', 0)}")
+            log_message(f"  - Unchanged (already in DB): {summary.get('unchanged', 0)}")
             log_message(f"  - New complaints: {summary.get('new', 0)}")
             log_message(f"  - Updated: {summary.get('updated', 0)}")
-            log_message(f"  - Filtered out: {summary.get('filtered_out', 0)}")
-            log_message(f"  - Unchanged: {summary.get('unchanged', 0)}")
-            log_message(f"  - Total checked: {summary.get('checked', 0)}")
         else:
             log_message("WARNING: process() returned None or empty summary")
             summary = {"new": 0, "updated": 0, "filtered_out": 0, "unchanged": 0, "checked": 0, "updates_log": []}

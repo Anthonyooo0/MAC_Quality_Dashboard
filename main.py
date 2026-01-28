@@ -968,6 +968,8 @@ def process(override_start_date=None, log_callback=None):
     new_threads = 0
     updated_threads = 0
     filtered_out = 0
+    filtered_noise = 0  # Filtered by is_noise_email
+    filtered_not_complaint = 0  # Filtered by Gemini saying not a complaint
     unchanged = 0
     updates_log = []
     latest_msg_by_conv = {}
@@ -1051,13 +1053,15 @@ def process(override_start_date=None, log_callback=None):
         if is_noise_email(subject_clean, sender_email, latest_reply):
             if existing_by_conv:
                 touch_conversation(conv_id, rdt)
+            filtered_noise += 1
             filtered_out += 1
             continue
-        
+
         llm_out = gemini_extract(model, subject_clean, sender_email, body_plain)
         if not llm_out.get("is_complaint", False):
             if existing_by_conv:
                 touch_conversation(conv_id, rdt)
+            filtered_not_complaint += 1
             filtered_out += 1
             continue
         
@@ -1163,16 +1167,27 @@ def process(override_start_date=None, log_callback=None):
             new_threads += 1
             updates_log.append(f"Added new case: {subject_clean} (PN: {pn_final})")
     
+    # Log detailed filter breakdown
+    log(f"[INFO] === FILTER BREAKDOWN ===")
+    log(f"[INFO] Total conversations processed: {len(latest_msg_by_conv)}")
+    log(f"[INFO] Filtered by noise keywords: {filtered_noise}")
+    log(f"[INFO] Filtered by Gemini (not complaint): {filtered_not_complaint}")
+    log(f"[INFO] Unchanged (already in DB): {unchanged}")
+    log(f"[INFO] New complaints added: {new_threads}")
+    log(f"[INFO] Updated complaints: {updated_threads}")
+
     summary = {
         "new": new_threads,
         "updated": updated_threads,
         "filtered_out": filtered_out,
+        "filtered_noise": filtered_noise,
+        "filtered_not_complaint": filtered_not_complaint,
         "unchanged": unchanged,
         "checked": checked,
         "excel_written": (new_threads > 0 or updated_threads > 0),
         "updates_log": updates_log,
     }
-    
+
     if summary["excel_written"]:
         export_to_excel()
 
