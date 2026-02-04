@@ -544,7 +544,8 @@ def run_sync_process(ui_log_callback=None):
 
         # Call the main process function WITHOUT override - uses START_DATE from main.py
         # This matches the original dashboard.py behavior
-        summary = process(log_callback=ui_log_callback)
+        # IMPORTANT: Pass combined_log (not ui_log_callback) so logs are saved to session state
+        summary = process(log_callback=combined_log)
 
         log_message("process() completed successfully")
 
