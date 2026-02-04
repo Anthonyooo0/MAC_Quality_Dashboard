@@ -831,13 +831,41 @@ def fetch_messages_since(start_iso: str, mailbox: str = MAILBOX, page_size: int 
         "$select": "id,conversationId,receivedDateTime,subject,from,body,webLink,bodyPreview,internetMessageId"
     }
     url = f"{base}?{urlencode(params)}"
+
+    # Retry settings for transient errors (503, 429, 500, 502, 504)
+    max_retries = 5
+    retry_delay = 2  # seconds
+
     while True:
-        resp = requests.get(url, headers=graph_headers(token))
-        if resp.status_code == 401:
-            token = get_token()
+        retries = 0
+        resp = None
+
+        while retries < max_retries:
             resp = requests.get(url, headers=graph_headers(token))
+
+            # Handle auth errors
+            if resp.status_code == 401:
+                token = get_token()
+                resp = requests.get(url, headers=graph_headers(token))
+
+            # Success
+            if resp.status_code == 200:
+                break
+
+            # Transient errors - retry with backoff
+            if resp.status_code in (429, 500, 502, 503, 504):
+                retries += 1
+                wait_time = retry_delay * (2 ** (retries - 1))  # Exponential backoff
+                print(f"[WARN] Graph API returned {resp.status_code}, retrying in {wait_time}s... (attempt {retries}/{max_retries})")
+                time.sleep(wait_time)
+                continue
+
+            # Non-retryable error
+            break
+
         if resp.status_code != 200:
             raise RuntimeError(f"Graph error {resp.status_code}: {resp.text}")
+
         data = resp.json()
         for item in data.get("value", []):
             yield item
