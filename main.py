@@ -1061,8 +1061,14 @@ def process(override_start_date=None, log_callback=None):
     log("[INFO] Initializing Gemini AI model...")
     model = gemini_client()
     log("[INFO] Processing conversations through AI filter...")
-    
+    total_convs = len(latest_msg_by_conv)
+    conv_processed = 0
+
     for conv_id, msg in latest_msg_by_conv.items():
+        conv_processed += 1
+        if conv_processed % 50 == 0 or conv_processed == 1:
+            log(f"[INFO] AI processing: {conv_processed}/{total_convs} conversations (found {new_threads} quality issues so far)")
+
         subject_raw = msg.get("subject") or ""
         subject_clean = clean_subject(subject_raw)
         sender_email = ((msg.get("from") or {}).get("emailAddress") or {}).get("address", "")
