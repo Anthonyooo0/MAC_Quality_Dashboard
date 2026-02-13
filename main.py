@@ -103,6 +103,72 @@ KEYWORDS = [
 
 STRONG_SIGNALS = {"ncmr", "scar", "dmr", "rma", "nonconformance", "non-conformance", "ncr", "car", "8d"}
 
+# Broad quality keywords - if ANY appear in subject or body, send to Gemini
+# This pre-filter reduces Gemini API calls from ~4700 to ~800-1500
+QUALITY_KEYWORDS = [
+    # Formal quality documents
+    "ncmr", "scar", "dmr", "rma", "ncr", "car", "8d", "capa",
+    # Defects and problems
+    "defect", "defective", "reject", "rejected", "rejection",
+    "nonconform", "non-conform", "noncomplian", "non-complian",
+    "failure", "failed", "failing",
+    "crack", "cracked", "cracking",
+    "scratch", "scratched", "dent", "dented", "bent",
+    "corroded", "corrosion", "rust", "rusted",
+    "broken", "broke", "break",
+    "wrong", "incorrect", "error",
+    "out of spec", "out of tolerance", "out of print",
+    "dimension", "tolerance",
+    # Actions
+    "rework", "reworked", "scrap", "scrapped",
+    "return", "returned", "rtv", "return to vendor",
+    "replacement", "replace",
+    "credit", "debit memo",
+    "warranty",
+    # Quality processes
+    "qc-reject", "qc reject", "qc-sample", "qc rejected",
+    "inspection", "inspected",
+    "quality", "qa ",
+    "complaint",
+    # Shipping issues
+    "damage", "damaged",
+    "missing", "short ship", "shortage",
+    "mislabel", "mis-label",
+    # Documentation
+    "wrong rev", "wrong revision", "wrong drawing",
+    "bom error",
+    # Part issues
+    "plating", "coating", "countersink",
+    "out of round", "ovality",
+    "contamina",
+    # Field issues
+    "field failure", "field issue",
+    "recall", "recalled",
+    # Additional quality terms from real data
+    "sdr", "ppap",  # Supplier deviation request, Production Part Approval
+    "deviation",
+    "out-of-spec",  # hyphenated version
+    "revision",  # revision issues
+    "misalign", "not flush",
+    "dispute",
+    "mismatch",
+    "discrepan",  # discrepancy/discrepancies
+    "held", "on hold",
+    "duplicate lot",
+    "not meet", "does not meet",
+    "out of spec",
+    "not correct", "is incorrect",
+    "overdue",
+    "certificate", " cert ",
+    "troubleshoot",
+    "late deliver",
+    "interference",
+    "insufficient",
+    "outdated",
+    "not being shipped",
+    "canceled", "cancelled",
+]
+
 SENDER_BLOCKLIST = {
     "eminder@culturewise.com",
     "no-reply@culturewise.com",
@@ -216,9 +282,7 @@ def contains_keywords(text: str) -> bool:
 
 def is_noise_email(subject: str, sender: str) -> bool:
     """
-    Filter out obvious noise emails. Let Gemini decide if something is a complaint.
-    Only filter: blocked senders, blocked domains, blocked subject phrases.
-    Do NOT filter based on keywords - let Gemini AI make that decision.
+    Filter out obvious noise emails based on sender/domain/subject blocklists.
     """
     s = (subject or "").lower()
     sender = (sender or "").lower()
@@ -236,7 +300,27 @@ def is_noise_email(subject: str, sender: str) -> bool:
     if any(phrase in s for phrase in SUBJECT_BLOCK_PHRASES):
         return True
 
-    # Let Gemini decide if it's a complaint - don't filter by keywords
+    return False
+
+def has_quality_signals(subject: str, body_text: str) -> bool:
+    """
+    Check if subject or body contains any quality-related keywords.
+    This pre-filter reduces the number of expensive Gemini API calls.
+    Only emails with quality signals get sent to Gemini for classification.
+    """
+    # Check subject + first 1500 chars of body (enough context, avoids huge emails)
+    text = ((subject or "") + " " + (body_text or "")[:1500]).lower()
+
+    # Strong signals - formal quality document references
+    for signal in STRONG_SIGNALS:
+        if signal in text:
+            return True
+
+    # Broad quality keywords
+    for kw in QUALITY_KEYWORDS:
+        if kw in text:
+            return True
+
     return False
 
 # [INCLUDE ALL YOUR DATETIME AND ORIGIN EXTRACTION FUNCTIONS]
@@ -1000,6 +1084,7 @@ def process(override_start_date=None, log_callback=None):
     updated_threads = 0
     filtered_out = 0
     filtered_noise = 0  # Filtered by is_noise_email
+    filtered_no_signals = 0  # Filtered by keyword pre-filter (no quality keywords)
     filtered_not_complaint = 0  # Filtered by Gemini saying not a complaint
     unchanged = 0
     updates_log = []
@@ -1063,11 +1148,12 @@ def process(override_start_date=None, log_callback=None):
     log("[INFO] Processing conversations through AI filter...")
     total_convs = len(latest_msg_by_conv)
     conv_processed = 0
+    gemini_calls = 0
 
     for conv_id, msg in latest_msg_by_conv.items():
         conv_processed += 1
-        if conv_processed % 50 == 0 or conv_processed == 1:
-            log(f"[INFO] AI processing: {conv_processed}/{total_convs} conversations (found {new_threads} quality issues so far)")
+        if conv_processed % 200 == 0 or conv_processed == 1:
+            log(f"[INFO] Scanning: {conv_processed}/{total_convs} | Sent to AI: {gemini_calls} | Complaints: {new_threads}")
 
         subject_raw = msg.get("subject") or ""
         subject_clean = clean_subject(subject_raw)
@@ -1094,6 +1180,16 @@ def process(override_start_date=None, log_callback=None):
             filtered_out += 1
             continue
 
+        # Pre-filter: skip emails with no quality-related keywords
+        # This dramatically reduces Gemini API calls (from ~4700 to ~800-1500)
+        if not has_quality_signals(subject_clean, body_plain):
+            if existing_by_conv:
+                touch_conversation(conv_id, rdt)
+            filtered_no_signals += 1
+            filtered_out += 1
+            continue
+
+        gemini_calls += 1
         llm_out = gemini_extract(model, subject_clean, sender_email, body_plain)
         if not llm_out.get("is_complaint", False):
             if existing_by_conv:
@@ -1206,9 +1302,11 @@ def process(override_start_date=None, log_callback=None):
     
     # Log detailed filter breakdown
     log(f"[INFO] === FILTER BREAKDOWN ===")
-    log(f"[INFO] Total conversations processed: {len(latest_msg_by_conv)}")
-    log(f"[INFO] Filtered by noise keywords: {filtered_noise}")
-    log(f"[INFO] Filtered by Gemini (not complaint): {filtered_not_complaint}")
+    log(f"[INFO] Total conversations: {len(latest_msg_by_conv)}")
+    log(f"[INFO] Skipped (blocked sender/domain): {filtered_noise}")
+    log(f"[INFO] Skipped (no quality keywords): {filtered_no_signals}")
+    log(f"[INFO] Sent to Gemini AI: {gemini_calls}")
+    log(f"[INFO] Gemini said not complaint: {filtered_not_complaint}")
     log(f"[INFO] Unchanged (already in DB): {unchanged}")
     log(f"[INFO] New complaints added: {new_threads}")
     log(f"[INFO] Updated complaints: {updated_threads}")
@@ -1218,7 +1316,9 @@ def process(override_start_date=None, log_callback=None):
         "updated": updated_threads,
         "filtered_out": filtered_out,
         "filtered_noise": filtered_noise,
+        "filtered_no_signals": filtered_no_signals,
         "filtered_not_complaint": filtered_not_complaint,
+        "gemini_calls": gemini_calls,
         "unchanged": unchanged,
         "checked": checked,
         "excel_written": (new_threads > 0 or updated_threads > 0),
