@@ -13,7 +13,7 @@ from dateutil.tz import tzutc
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from msal import PublicClientApplication, ConfidentialClientApplication
+from msal import PublicClientApplication, SerializableTokenCache
 
 from typing import Tuple
 
@@ -152,41 +152,41 @@ MISSING_PN = "No part number provided"
 # =================
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["Mail.Read", "User.Read"]
-app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
 
-# For headless mode (GitHub Actions), use client credentials
-_confidential_app = None
-if HEADLESS and CLIENT_SECRET:
-    _confidential_app = ConfidentialClientApplication(
-        CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
-    )
+# Build MSAL app - in headless mode, load cached refresh token from env
+_token_cache = SerializableTokenCache()
+if HEADLESS:
+    _cache_data = os.getenv("MSAL_TOKEN_CACHE", "")
+    if _cache_data:
+        _token_cache.deserialize(_cache_data)
+        print("[INFO] Loaded MSAL token cache from MSAL_TOKEN_CACHE env var")
+    else:
+        print("[WARN] HEADLESS mode but no MSAL_TOKEN_CACHE found")
 
-# Cached token for headless mode
-_headless_token = None
-_headless_token_expires = 0
+app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=_token_cache)
 
 def get_token():
     """
     Get Microsoft Graph API token.
     - Streamlit mode: uses session state (device flow auth from sidebar)
-    - Headless mode: uses client credentials (app-only permissions)
+    - Headless mode: uses cached refresh token (delegated permissions)
     """
-    global _headless_token, _headless_token_expires
-
     if HEADLESS:
-        # Client credentials flow for GitHub Actions
-        if time.time() < _headless_token_expires and _headless_token:
-            return _headless_token
-        if not _confidential_app:
-            raise RuntimeError("HEADLESS mode requires CLIENT_SECRET for client credentials auth")
-        result = _confidential_app.acquire_token_for_client(
-            scopes=["https://graph.microsoft.com/.default"]
+        # Use cached refresh token (delegated permissions, no app-level needed)
+        accounts = app.get_accounts()
+        if not accounts:
+            raise RuntimeError(
+                "No cached accounts found. Run 'python get_token_cache.py' locally "
+                "and save the output as the MSAL_TOKEN_CACHE GitHub secret."
+            )
+        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+        if result and "access_token" in result:
+            return result["access_token"]
+        raise RuntimeError(
+            f"Token refresh failed: {result.get('error_description', 'Unknown error')}. "
+            "The refresh token may have expired (90 days). "
+            "Re-run 'python get_token_cache.py' to get a new one."
         )
-        if "access_token" in result:
-            _headless_token = result["access_token"]
-            _headless_token_expires = time.time() + result.get("expires_in", 3600)
-            return _headless_token
-        raise RuntimeError(f"Client credentials auth failed: {result.get('error_description', 'Unknown error')}")
 
     # Streamlit mode: check session state
     if hasattr(st, 'session_state') and hasattr(st.session_state, '__contains__'):
