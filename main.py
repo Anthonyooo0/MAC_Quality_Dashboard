@@ -27,6 +27,9 @@ try:
 except ImportError:
     _HAS_STREAMLIT = False
     # Create a minimal mock so code doesn't break
+    class _MockSecrets:
+        def __getitem__(self, key):
+            raise KeyError(key)
     class _MockSt:
         class session_state:
             pass
@@ -38,8 +41,7 @@ except ImportError:
         def info(msg): print(f"[INFO] {msg}")
         @staticmethod
         def success(msg): print(f"[OK] {msg}")
-        class secrets:
-            pass
+        secrets = _MockSecrets()
     st = _MockSt()
 
 # =========================

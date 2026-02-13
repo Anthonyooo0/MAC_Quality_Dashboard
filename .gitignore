@@ -39,6 +39,9 @@ Complaint_Log.xlsx
 # Logs
 *.log
 
+# Token cache (DON'T COMMIT THIS!)
+msal_token_cache.txt
+
 # Streamlit secrets (DON'T COMMIT THIS!)
 .streamlit/secrets.toml
 
