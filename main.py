@@ -13,10 +13,34 @@ from dateutil.tz import tzutc
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from msal import PublicClientApplication
-import streamlit as st
+from msal import PublicClientApplication, ConfidentialClientApplication
 
 from typing import Tuple
+
+# Detect if running inside Streamlit or headlessly (GitHub Actions / CLI)
+HEADLESS = os.getenv("HEADLESS", "").lower() in ("1", "true", "yes")
+try:
+    if HEADLESS:
+        raise ImportError("Forced headless mode")
+    import streamlit as st
+    _HAS_STREAMLIT = True
+except ImportError:
+    _HAS_STREAMLIT = False
+    # Create a minimal mock so code doesn't break
+    class _MockSt:
+        class session_state:
+            pass
+        @staticmethod
+        def error(msg): print(f"[ERROR] {msg}")
+        @staticmethod
+        def warning(msg): print(f"[WARN] {msg}")
+        @staticmethod
+        def info(msg): print(f"[INFO] {msg}")
+        @staticmethod
+        def success(msg): print(f"[OK] {msg}")
+        class secrets:
+            pass
+    st = _MockSt()
 
 # =========================
 # Paths / packaging support
@@ -103,71 +127,6 @@ KEYWORDS = [
 
 STRONG_SIGNALS = {"ncmr", "scar", "dmr", "rma", "nonconformance", "non-conformance", "ncr", "car", "8d"}
 
-# Broad quality keywords - if ANY appear in subject or body, send to Gemini
-# This pre-filter reduces Gemini API calls from ~4700 to ~800-1500
-QUALITY_KEYWORDS = [
-    # Formal quality documents
-    "ncmr", "scar", "dmr", "rma", "ncr", "car", "8d", "capa",
-    # Defects and problems
-    "defect", "defective", "reject", "rejected", "rejection",
-    "nonconform", "non-conform", "noncomplian", "non-complian",
-    "failure", "failed", "failing",
-    "crack", "cracked", "cracking",
-    "scratch", "scratched", "dent", "dented", "bent",
-    "corroded", "corrosion", "rust", "rusted",
-    "broken", "broke", "break",
-    "wrong", "incorrect", "error",
-    "out of spec", "out of tolerance", "out of print",
-    "dimension", "tolerance",
-    # Actions
-    "rework", "reworked", "scrap", "scrapped",
-    "return", "returned", "rtv", "return to vendor",
-    "replacement", "replace",
-    "credit", "debit memo",
-    "warranty",
-    # Quality processes
-    "qc-reject", "qc reject", "qc-sample", "qc rejected",
-    "inspection", "inspected",
-    "quality", "qa ",
-    "complaint",
-    # Shipping issues
-    "damage", "damaged",
-    "missing", "short ship", "shortage",
-    "mislabel", "mis-label",
-    # Documentation
-    "wrong rev", "wrong revision", "wrong drawing",
-    "bom error",
-    # Part issues
-    "plating", "coating", "countersink",
-    "out of round", "ovality",
-    "contamina",
-    # Field issues
-    "field failure", "field issue",
-    "recall", "recalled",
-    # Additional quality terms from real data
-    "sdr", "ppap",  # Supplier deviation request, Production Part Approval
-    "deviation",
-    "out-of-spec",  # hyphenated version
-    "revision",  # revision issues
-    "misalign", "not flush",
-    "dispute",
-    "mismatch",
-    "discrepan",  # discrepancy/discrepancies
-    "held", "on hold",
-    "duplicate lot",
-    "not meet", "does not meet",
-    "out of spec",
-    "not correct", "is incorrect",
-    "overdue",
-    "certificate", " cert ",
-    "troubleshoot",
-    "late deliver",
-    "interference",
-    "insufficient",
-    "outdated",
-    "not being shipped",
-    "canceled", "cancelled",
-]
 
 SENDER_BLOCKLIST = {
     "eminder@culturewise.com",
@@ -189,37 +148,62 @@ SUBJECT_BLOCK_PHRASES = {
 MISSING_PN = "No part number provided"
 
 # =================
-# Graph Auth setup - STREAMLIT VERSION
+# Graph Auth setup
 # =================
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["Mail.Read", "User.Read"]
 app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
 
-# ====================
-# FIXED AUTHENTICATION FUNCTION
-# Replace the get_token() function in your main.py with this version
-# ====================
+# For headless mode (GitHub Actions), use client credentials
+_confidential_app = None
+if HEADLESS and CLIENT_SECRET:
+    _confidential_app = ConfidentialClientApplication(
+        CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
+    )
+
+# Cached token for headless mode
+_headless_token = None
+_headless_token_expires = 0
 
 def get_token():
     """
-    Get token from session state (authentication handled in streamlit_app.py sidebar).
-    Returns token if valid, otherwise raises error.
+    Get Microsoft Graph API token.
+    - Streamlit mode: uses session state (device flow auth from sidebar)
+    - Headless mode: uses client credentials (app-only permissions)
     """
-    # Check if we have a valid token in session state
-    if "access_token" in st.session_state and "token_expires_at" in st.session_state:
-        if time.time() < st.session_state.token_expires_at:
-            return st.session_state.access_token
+    global _headless_token, _headless_token_expires
+
+    if HEADLESS:
+        # Client credentials flow for GitHub Actions
+        if time.time() < _headless_token_expires and _headless_token:
+            return _headless_token
+        if not _confidential_app:
+            raise RuntimeError("HEADLESS mode requires CLIENT_SECRET for client credentials auth")
+        result = _confidential_app.acquire_token_for_client(
+            scopes=["https://graph.microsoft.com/.default"]
+        )
+        if "access_token" in result:
+            _headless_token = result["access_token"]
+            _headless_token_expires = time.time() + result.get("expires_in", 3600)
+            return _headless_token
+        raise RuntimeError(f"Client credentials auth failed: {result.get('error_description', 'Unknown error')}")
+
+    # Streamlit mode: check session state
+    if hasattr(st, 'session_state') and hasattr(st.session_state, '__contains__'):
+        if "access_token" in st.session_state and "token_expires_at" in st.session_state:
+            if time.time() < st.session_state.token_expires_at:
+                return st.session_state.access_token
 
     # Try silent authentication with cached account
     accounts = app.get_accounts()
     if accounts:
         result = app.acquire_token_silent(SCOPES, account=accounts[0])
         if result and "access_token" in result:
-            st.session_state.access_token = result["access_token"]
-            st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
+            if hasattr(st, 'session_state') and hasattr(st.session_state, '__setattr__'):
+                st.session_state.access_token = result["access_token"]
+                st.session_state.token_expires_at = time.time() + result.get("expires_in", 3600)
             return result["access_token"]
 
-    # No valid token - authentication required
     raise RuntimeError("Authentication required. Please authenticate in the sidebar.")
 
 SUBJECT_PREFIXES = ("re:", "fw:", "fwd:", "sv:", "答复:", "回复:", "aw:", "wg:", "r:")
@@ -302,26 +286,6 @@ def is_noise_email(subject: str, sender: str) -> bool:
 
     return False
 
-def has_quality_signals(subject: str, body_text: str) -> bool:
-    """
-    Check if subject or body contains any quality-related keywords.
-    This pre-filter reduces the number of expensive Gemini API calls.
-    Only emails with quality signals get sent to Gemini for classification.
-    """
-    # Check subject + first 1500 chars of body (enough context, avoids huge emails)
-    text = ((subject or "") + " " + (body_text or "")[:1500]).lower()
-
-    # Strong signals - formal quality document references
-    for signal in STRONG_SIGNALS:
-        if signal in text:
-            return True
-
-    # Broad quality keywords
-    for kw in QUALITY_KEYWORDS:
-        if kw in text:
-            return True
-
-    return False
 
 # [INCLUDE ALL YOUR DATETIME AND ORIGIN EXTRACTION FUNCTIONS]
 _SENT_LABELS = ("Sent:", "Date:", "Enviado:", "Fecha:", "Verzonden:", "Gesendet:")
@@ -1084,7 +1048,6 @@ def process(override_start_date=None, log_callback=None):
     updated_threads = 0
     filtered_out = 0
     filtered_noise = 0  # Filtered by is_noise_email
-    filtered_no_signals = 0  # Filtered by keyword pre-filter (no quality keywords)
     filtered_not_complaint = 0  # Filtered by Gemini saying not a complaint
     unchanged = 0
     updates_log = []
@@ -1177,15 +1140,6 @@ def process(override_start_date=None, log_callback=None):
             if existing_by_conv:
                 touch_conversation(conv_id, rdt)
             filtered_noise += 1
-            filtered_out += 1
-            continue
-
-        # Pre-filter: skip emails with no quality-related keywords
-        # This dramatically reduces Gemini API calls (from ~4700 to ~800-1500)
-        if not has_quality_signals(subject_clean, body_plain):
-            if existing_by_conv:
-                touch_conversation(conv_id, rdt)
-            filtered_no_signals += 1
             filtered_out += 1
             continue
 
@@ -1304,7 +1258,6 @@ def process(override_start_date=None, log_callback=None):
     log(f"[INFO] === FILTER BREAKDOWN ===")
     log(f"[INFO] Total conversations: {len(latest_msg_by_conv)}")
     log(f"[INFO] Skipped (blocked sender/domain): {filtered_noise}")
-    log(f"[INFO] Skipped (no quality keywords): {filtered_no_signals}")
     log(f"[INFO] Sent to Gemini AI: {gemini_calls}")
     log(f"[INFO] Gemini said not complaint: {filtered_not_complaint}")
     log(f"[INFO] Unchanged (already in DB): {unchanged}")
@@ -1316,7 +1269,6 @@ def process(override_start_date=None, log_callback=None):
         "updated": updated_threads,
         "filtered_out": filtered_out,
         "filtered_noise": filtered_noise,
-        "filtered_no_signals": filtered_no_signals,
         "filtered_not_complaint": filtered_not_complaint,
         "gemini_calls": gemini_calls,
         "unchanged": unchanged,

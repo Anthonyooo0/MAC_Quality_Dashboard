@@ -225,10 +225,53 @@ if 'show_sync_report' not in st.session_state:
     st.session_state.show_sync_report = False
 if 'sync_report_data' not in st.session_state:
     st.session_state.sync_report_data = None
+if 'db_downloaded' not in st.session_state:
+    st.session_state.db_downloaded = False
 
 # ==========================================
 # Helper Functions
 # ==========================================
+
+def download_db_from_github() -> bool:
+    """Download complaints.db from the data branch on GitHub.
+    Requires GITHUB_REPO (e.g. 'owner/repo') in secrets or env.
+    For private repos, also set GITHUB_TOKEN.
+    """
+    try:
+        github_repo = ""
+        github_token = ""
+        try:
+            github_repo = st.secrets["credentials"].get("GITHUB_REPO", "")
+            github_token = st.secrets["credentials"].get("GITHUB_TOKEN", "")
+        except (KeyError, FileNotFoundError, AttributeError):
+            pass
+        if not github_repo:
+            github_repo = os.getenv("GITHUB_REPO", "")
+        if not github_token:
+            github_token = os.getenv("GITHUB_TOKEN", "")
+
+        if not github_repo:
+            return False
+
+        url = f"https://raw.githubusercontent.com/{github_repo}/data/complaints.db"
+        headers = {}
+        if github_token:
+            headers["Authorization"] = f"token {github_token}"
+
+        import requests as req
+        resp = req.get(url, headers=headers, timeout=60)
+        if resp.status_code == 200:
+            with open(DB_PATH, "wb") as f:
+                f.write(resp.content)
+            print(f"[OK] Downloaded database from GitHub ({len(resp.content):,} bytes)")
+            return True
+        else:
+            print(f"[WARN] Could not download database from GitHub: HTTP {resp.status_code}")
+            return False
+    except Exception as e:
+        print(f"[WARN] Failed to download database from GitHub: {e}")
+        return False
+
 
 def load_custom_columns() -> List[str]:
     """Load custom column definitions from database"""
@@ -357,7 +400,13 @@ def delete_row_from_db(conversation_id: str) -> bool:
         return False
 
 def load_data() -> pd.DataFrame:
-    """Load and prepare data from database"""
+    """Load and prepare data from database.
+    On first call per session, downloads latest db from GitHub data branch.
+    """
+    if not st.session_state.get('db_downloaded', False):
+        if download_db_from_github():
+            st.session_state.db_downloaded = True
+
     init_db()
     df = fetch_all_rows()
 
@@ -795,8 +844,9 @@ with st.sidebar:
             st.session_state.show_auth_dialog = True
             st.rerun()
     
-    # REFRESH DATA
+    # REFRESH DATA (re-downloads from GitHub)
     if st.button("Refresh Data", use_container_width=True):
+        st.session_state.db_downloaded = False  # Force re-download
         st.session_state.df = load_data()
         st.rerun()
     
