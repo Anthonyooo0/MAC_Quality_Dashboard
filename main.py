@@ -153,13 +153,23 @@ MISSING_PN = "No part number provided"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["Mail.Read", "User.Read"]
 
-# Build MSAL app - in headless mode, load cached refresh token from env
+# Build MSAL app - in headless mode, load cached refresh token
 _token_cache = SerializableTokenCache()
 if HEADLESS:
     _cache_data = os.getenv("MSAL_TOKEN_CACHE", "")
+    # Also check for msal_token_cache.txt file (from get_token_cache.py)
+    if not _cache_data:
+        _cache_file = os.path.join(BASE_DIR, "msal_token_cache.txt")
+        if os.path.exists(_cache_file):
+            with open(_cache_file, "r") as f:
+                _cache_data = f.read().strip()
+            print(f"[INFO] Loaded MSAL token cache from {_cache_file}")
     if _cache_data:
         _token_cache.deserialize(_cache_data)
-        print("[INFO] Loaded MSAL token cache from MSAL_TOKEN_CACHE env var")
+        if not os.getenv("MSAL_TOKEN_CACHE"):
+            print("[INFO] Loaded MSAL token cache from file")
+        else:
+            print("[INFO] Loaded MSAL token cache from MSAL_TOKEN_CACHE env var")
     else:
         print("[WARN] HEADLESS mode but no MSAL_TOKEN_CACHE found")
 
@@ -682,9 +692,37 @@ def init_db():
             column_type TEXT DEFAULT 'TEXT'
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
     con.commit()
     con.close()
     ensure_columns()
+
+
+def get_db_setting(key: str, default: str = "") -> str:
+    """Read a setting from the database settings table."""
+    try:
+        con = sqlite3.connect(DB_PATH)
+        cur = con.cursor()
+        cur.execute("SELECT value FROM settings WHERE key=?", (key,))
+        row = cur.fetchone()
+        con.close()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+
+def set_db_setting(key: str, value: str):
+    """Write a setting to the database settings table."""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    con.commit()
+    con.close()
 
 def upsert_row(row: dict):
     con = sqlite3.connect(DB_PATH)
@@ -1054,7 +1092,15 @@ def process(override_start_date=None, log_callback=None):
     latest_msg_by_conv = {}
     first_msg_by_conv = {}
 
-    start_iso = override_start_date or START_DATE
+    # Use last_sync_date from database if available, otherwise fall back to START_DATE
+    db_last_sync = get_db_setting("last_sync_date", "")
+    if override_start_date:
+        start_iso = override_start_date
+    elif db_last_sync:
+        start_iso = db_last_sync
+        log(f"[INFO] Found last_sync_date in database: {db_last_sync}")
+    else:
+        start_iso = START_DATE
     log(f"[INFO] Using start date: {start_iso}")
     log(f"[INFO] Mailbox: {MAILBOX}")
     log("[INFO] Fetching messages from Graph API...")
@@ -1288,35 +1334,36 @@ def process(override_start_date=None, log_callback=None):
     return summary
 
 def update_start_date_env():
-    """Update START_DATE in .env or session state"""
+    """Save last sync timestamp to the database (and .env if it exists)."""
     global START_DATE
     now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-    # Update the in-memory variable FIRST (critical fix)
     START_DATE = now_iso
 
-    # Try to update .env file if it exists (local development)
+    # Save to database -- this is the primary storage that works everywhere
+    set_db_setting("last_sync_date", now_iso)
+    print(f"[INFO] last_sync_date saved to database: {now_iso}")
+
+    # Also update .env file if it exists (local development convenience)
     env_path = os.path.join(BASE_DIR, ".env")
     if os.path.exists(env_path):
-        lines = []
-        with open(env_path, "r") as f:
-            lines = f.readlines()
-        found = False
-        new_lines = []
-        for line in lines:
-            if line.startswith("START_DATE="):
+        try:
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+            new_lines = []
+            found = False
+            for line in lines:
+                if line.startswith("START_DATE="):
+                    new_lines.append(f"START_DATE={now_iso}\n")
+                    found = True
+                else:
+                    new_lines.append(line)
+            if not found:
                 new_lines.append(f"START_DATE={now_iso}\n")
-                found = True
-            else:
-                new_lines.append(line)
-        if not found:
-            new_lines.append(f"START_DATE={now_iso}\n")
-        with open(env_path, "w") as f:
-            f.writelines(new_lines)
-        print(f"[INFO] START_DATE updated to {now_iso} (in-memory and .env file)")
-    else:
-        # For cloud deployment, just log it
-        print(f"[INFO] START_DATE updated to {now_iso} (in-memory only, .env not writable)")
+            with open(env_path, "w") as f:
+                f.writelines(new_lines)
+        except Exception:
+            pass
 
 # REMOVED: All Tkinter functions (update_complaint_log, show_success_popup)
 # These are replaced by Streamlit UI in streamlit_app.py
