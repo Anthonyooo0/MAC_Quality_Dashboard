@@ -394,7 +394,7 @@ with st.sidebar:
     except Exception as e:
         st.error(f"Failed to generate Excel: {e}")
 
-    st.caption("Data syncs automatically every 3 days.")
+    st.caption("Data refreshes from GitHub on load.")
 
     st.markdown("---")
     st.header("Filters")
