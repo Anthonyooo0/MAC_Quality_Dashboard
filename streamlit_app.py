@@ -145,7 +145,11 @@ def download_db_from_github() -> bool:
             headers["Authorization"] = f"token {github_token}"
 
         import requests as req
+        # Try with token first, fall back to public access if token fails
         resp = req.get(url, headers=headers, timeout=60)
+        if resp.status_code != 200 and github_token:
+            # Token may be expired — retry without auth (works for public repos)
+            resp = req.get(url, timeout=60)
         if resp.status_code == 200:
             with open(DB_PATH, "wb") as f:
                 f.write(resp.content)
