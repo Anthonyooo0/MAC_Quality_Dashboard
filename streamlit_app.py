@@ -118,17 +118,25 @@ def download_db_from_github() -> bool:
     try:
         github_repo = ""
         github_token = ""
+        # Try [credentials] section first, then flat secrets, then env vars
         try:
             github_repo = st.secrets["credentials"].get("GITHUB_REPO", "")
             github_token = st.secrets["credentials"].get("GITHUB_TOKEN", "")
         except (KeyError, FileNotFoundError, AttributeError):
             pass
         if not github_repo:
+            try:
+                github_repo = st.secrets.get("GITHUB_REPO", "")
+                github_token = st.secrets.get("GITHUB_TOKEN", "")
+            except (KeyError, FileNotFoundError, AttributeError):
+                pass
+        if not github_repo:
             github_repo = os.getenv("GITHUB_REPO", "")
         if not github_token:
             github_token = os.getenv("GITHUB_TOKEN", "")
 
         if not github_repo:
+            st.warning("GITHUB_REPO not configured in secrets. Cannot load data.")
             return False
 
         url = f"https://raw.githubusercontent.com/{github_repo}/data/complaints.db"
@@ -144,10 +152,10 @@ def download_db_from_github() -> bool:
             print(f"[OK] Downloaded database from GitHub ({len(resp.content):,} bytes)")
             return True
         else:
-            print(f"[WARN] Could not download database from GitHub: HTTP {resp.status_code}")
+            st.error(f"Could not download database from GitHub: HTTP {resp.status_code}")
             return False
     except Exception as e:
-        print(f"[WARN] Failed to download database from GitHub: {e}")
+        st.error(f"Failed to download database from GitHub: {e}")
         return False
 
 
