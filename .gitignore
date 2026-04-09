@@ -54,3 +54,4 @@ launcher_threaded.py
 # Documentation (optional - keep if you want)
 # BUILD_*.md
 # TROUBLESHOOTING.md
+msal_token_cache_sender.txt

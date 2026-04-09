@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from dateutil.parser import parse as dt_parse
+from google.api_core import retry as api_retry
 from dateutil.tz import tzutc
 
 import requests
@@ -100,7 +101,7 @@ def _mask_key(k: str) -> str:
         return "*" * (len(k) - 2) + k[-2:]
     return k[:4] + "..." + k[-4:]
 
-def _gemini_preflight(genai_mod, api_key: str, model_name: str = "gemini-3-flash-preview") -> bool:
+def _gemini_preflight(genai_mod, api_key: str, model_name: str = "gemini-3.1-pro-preview") -> bool:
     """Check if Gemini API key works"""
     try:
         genai_mod.configure(api_key=api_key)
@@ -154,6 +155,7 @@ MISSING_PN = "No part number provided"
 # =================
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["Mail.Read", "User.Read"]
+SCOPES_SEND = ["Mail.Read", "Mail.Send", "User.Read"]
 
 # Build MSAL app - in headless mode, load cached refresh token
 _token_cache = SerializableTokenCache()
@@ -995,50 +997,58 @@ def gemini_client():
     st.info(f"Loading API key from: **{CONFIG_SOURCE}** (ends with: ...{GEMINI_API_KEY[-4:] if len(GEMINI_API_KEY) >= 4 else 'N/A'})")
     print(f"[CONFIG] Loaded GEMINI_API_KEY from {CONFIG_SOURCE}:", key_preview)
 
-    if not _gemini_preflight(genai, GEMINI_API_KEY, "gemini-3-flash-preview"):
+    if not _gemini_preflight(genai, GEMINI_API_KEY, "gemini-3.1-pro-preview"):
         st.warning("Gemini API unavailable. AI email processing disabled. Dashboard will still work for manual data entry.")
         return None
 
     st.success("Gemini API connected successfully!")
     genai.configure(api_key=GEMINI_API_KEY)
     return genai.GenerativeModel(
-        model_name="gemini-3-flash-preview",
+        model_name="gemini-3.1-pro-preview",
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0,
         }
     )
 
+GEMINI_MODEL = "gemini-3.1-pro-preview"
+GEMINI_REST_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
 def gemini_extract(model, subject_clean: str, from_email: str, latest_reply: str,
-                   timeout_s: int = 30, retries: int = 3, backoff: float = 1.8) -> dict:
+                   timeout_s: int = 45, retries: int = 4, backoff: float = 3.0,
+                   max_body_chars: int = 8000) -> dict:
+    # Truncate very long email bodies to avoid Gemini timeouts
+    body_text = latest_reply[:max_body_chars] if len(latest_reply) > max_body_chars else latest_reply
     prompt = PROMPT_TEXT.format(
         subject_clean=subject_clean,
         from_email=from_email,
-        body_text=latest_reply
+        body_text=body_text
     )
+    # Use REST API directly to avoid SDK internal retry stacking on 504s
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0,
+        },
+    }
     last_exc = None
     for attempt in range(1, retries + 1):
         try:
-            resp = model.generate_content(prompt, request_options={"timeout": timeout_s})
-            text = getattr(resp, "text", None)
-            if not text:
-                try:
-                    text = resp.candidates[0].content.parts[0].text
-                except Exception:
-                    text = "{}"
+            resp = requests.post(
+                f"{GEMINI_REST_URL}?key={GEMINI_API_KEY}",
+                json=payload, timeout=timeout_s,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"{resp.status_code} {resp.text[:200]}")
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
             try:
                 data = json.loads(text)
             except Exception:
                 m = re.search(r"\{.*\}", text, flags=re.S)
                 data = json.loads(m.group(0)) if m else {}
             if isinstance(data, list):
-                if len(data)==1 and isinstance(data[0], dict):
-                    data = data[0]
-                else:
-                    try:
-                        data = dict(data)
-                    except Exception:
-                        data = {}
+                data = data[0] if len(data) == 1 and isinstance(data[0], dict) else {}
             if not isinstance(data, dict):
                 data = {}
             return {
@@ -1074,8 +1084,12 @@ def process(override_start_date=None, log_callback=None):
     Main sync process.
     log_callback: optional function(msg) to receive log messages for UI display
     """
+    _logfile = open(os.path.join(BASE_DIR, "sync_progress.log"), "w", encoding="utf-8")
     def log(msg):
-        print(msg)
+        safe = str(msg).encode("utf-8", errors="replace").decode("utf-8")
+        print(safe, flush=True)
+        _logfile.write(safe + "\n")
+        _logfile.flush()
         if log_callback:
             try:
                 log_callback(msg)
@@ -1163,8 +1177,8 @@ def process(override_start_date=None, log_callback=None):
 
     for conv_id, msg in latest_msg_by_conv.items():
         conv_processed += 1
-        if conv_processed % 200 == 0 or conv_processed == 1:
-            log(f"[INFO] Scanning: {conv_processed}/{total_convs} | Sent to AI: {gemini_calls} | Complaints: {new_threads}")
+        if conv_processed % 50 == 0 or conv_processed == 1:
+            log(f"[INFO] Scanning: {conv_processed}/{total_convs} | Sent to AI: {gemini_calls} | Complaints: {new_threads} | Unchanged: {unchanged}")
 
         subject_raw = msg.get("subject") or ""
         subject_clean = clean_subject(subject_raw)
@@ -1177,6 +1191,8 @@ def process(override_start_date=None, log_callback=None):
         latest_reply = trim_to_latest_reply(body_plain)
         tail_text = body_plain[len(latest_reply):].strip() if len(body_plain) > len(latest_reply) else ""
         
+        if conv_processed <= 3:
+            log(f"[DEBUG] Conv {conv_processed}: subject='{subject_clean[:40]}' body_len={len(body_plain)} sender={sender_email}")
         existing_by_conv = get_by_conversation_id(conv_id)
         if existing_by_conv:
             existing_rdt = existing_by_conv[1] or ""
@@ -1192,6 +1208,8 @@ def process(override_start_date=None, log_callback=None):
             continue
 
         gemini_calls += 1
+        if gemini_calls <= 3:
+            log(f"[DEBUG] Calling Gemini #{gemini_calls} for: '{subject_clean[:40]}'")
         llm_out = gemini_extract(model, subject_clean, sender_email, body_plain)
         if not llm_out.get("is_complaint", False):
             if existing_by_conv:
@@ -1367,16 +1385,75 @@ def update_start_date_env():
         except Exception:
             pass
 
-# REMOVED: All Tkinter functions (update_complaint_log, show_success_popup)
-# These are replaced by Streamlit UI in streamlit_app.py
+# ============================
+# Email notification via Graph
+# ============================
+NOTIFY_RECIPIENT = os.getenv("SYNC_NOTIFY_EMAIL", MAILBOX)
+SENDER_EMAIL = "anthony.jimenez@macproducts.net"
+
+# Load separate sender token (your account — for Mail.Send only)
+_sender_cache = SerializableTokenCache()
+_sender_cache_file = os.path.join(BASE_DIR, "msal_token_cache_sender.txt")
+if os.path.exists(_sender_cache_file):
+    with open(_sender_cache_file, "r") as f:
+        _sender_cache.deserialize(f.read().strip())
+_sender_app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=_sender_cache)
+
+def send_status_email(subject: str, body: str):
+    """Send a status email from your account via Microsoft Graph."""
+    try:
+        accounts = _sender_app.get_accounts()
+        if not accounts:
+            print("[WARN] Cannot send notification — no sender token (msal_token_cache_sender.txt)")
+            return
+        result = _sender_app.acquire_token_silent(SCOPES_SEND, account=accounts[0])
+        if not result or "access_token" not in result:
+            print("[WARN] Cannot send notification — sender token refresh failed")
+            return
+        token = result["access_token"]
+    except Exception as e:
+        print(f"[WARN] Cannot send notification — auth failed: {e}")
+        return
+    endpoint = f"{GRAPH_BASE}/me/sendMail"
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body},
+            "toRecipients": [
+                {"emailAddress": {"address": NOTIFY_RECIPIENT}},
+                {"emailAddress": {"address": SENDER_EMAIL}},
+            ],
+        },
+        "saveToSentItems": "true",
+    }
+    try:
+        resp = requests.post(endpoint, headers=graph_headers(token), json=payload, timeout=15)
+        if resp.status_code == 202:
+            print(f"[OK] Status email sent to {NOTIFY_RECIPIENT}")
+        else:
+            print(f"[WARN] sendMail returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"[WARN] Failed to send status email: {e}")
 
 if __name__ == "__main__":
     t0 = time.time()
     try:
-        process()
-    except Exception as e:
-        print(f"[FATAL] {e}")
-        sys.exit(1)
-    finally:
+        result = process()
         dt = time.time() - t0
         print(f"[DONE] Elapsed: {dt:.1f}s")
+        new, updated = result.get("new", 0), result.get("updated", 0)
+        checked = result.get("checked", 0)
+        send_status_email(
+            f"Sync completed: {new} new, {updated} updated complaints",
+            f"Sync finished in {dt:.0f}s.\n"
+            f"Emails scanned: {checked}\n"
+            f"New complaints: {new}\n"
+            f"Updated complaints: {updated}\n"
+            f"Filtered out: {result.get('filtered_out', 0)}\n"
+            f"Gemini calls: {result.get('gemini_calls', 0)}",
+        )
+    except Exception as e:
+        dt = time.time() - t0
+        print(f"[FATAL] {e}")
+        send_status_email("Sync FAILED", f"Error after {dt:.0f}s:\n{e}")
+        sys.exit(1)
