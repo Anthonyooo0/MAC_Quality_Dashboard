@@ -28,6 +28,13 @@ const App: React.FC = () => {
   const { instance, accounts } = useMsal();
   const isAuthenticated = useIsAuthenticated();
   const [currentUser, setCurrentUser] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [activeTab, setActiveTab] = useState<TabId>('data');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   useEffect(() => {
     if (isAuthenticated && accounts.length > 0) {
@@ -39,17 +46,6 @@ const App: React.FC = () => {
     await instance.logoutPopup();
     setCurrentUser(null);
   };
-
-  if (!currentUser) {
-    return <Login onLogin={setCurrentUser} />;
-  }
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [complaints, setComplaints] = useState<Complaint[]>([]);
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
-  const [activeTab, setActiveTab] = useState<TabId>('data');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const addToast = useCallback((message: string, type: ToastMessage['type']) => {
     const id = ++toastCounter;
@@ -107,11 +103,13 @@ const App: React.FC = () => {
     }
   }, [addToast]);
 
+  // Load database when user authenticates
   useEffect(() => {
-    loadDatabase();
-  }, [loadDatabase]);
+    if (currentUser) {
+      loadDatabase();
+    }
+  }, [currentUser, loadDatabase]);
 
-  // Extract unique categories for filter dropdown
   const categories = useMemo(() => {
     const cats = new Set<string>();
     complaints.forEach((c) => {
@@ -120,35 +118,24 @@ const App: React.FC = () => {
     return Array.from(cats).sort();
   }, [complaints]);
 
-  // Apply filters
   const filteredComplaints = useMemo(() => {
     return complaints.filter((c) => {
-      // Category filter
       if (filters.category && c.category !== filters.category) return false;
-
-      // Part number filter (case insensitive contains)
       if (filters.partNumber) {
         const pn = (c.part_number || '').toLowerCase();
         if (!pn.includes(filters.partNumber.toLowerCase())) return false;
       }
-
-      // Initiated by filter (case insensitive contains)
       if (filters.initiatedBy) {
         const email = (c.initiator_email || '').toLowerCase();
         if (!email.includes(filters.initiatedBy.toLowerCase())) return false;
       }
-
-      // Subject filter (case insensitive contains)
       if (filters.subject) {
         const subj = (c.subject || '').toLowerCase();
         if (!subj.includes(filters.subject.toLowerCase())) return false;
       }
-
-      // Date range filter
       if (filters.dateStart || filters.dateEnd) {
         const d = parseDate(c.first_seen_utc);
         if (!d) return false;
-
         if (filters.dateStart) {
           const start = new Date(filters.dateStart);
           start.setHours(0, 0, 0, 0);
@@ -160,14 +147,11 @@ const App: React.FC = () => {
           if (d > end) return false;
         }
       }
-
       return true;
     });
   }, [complaints, filters]);
 
-  const handleRefresh = () => {
-    loadDatabase();
-  };
+  const handleRefresh = () => loadDatabase();
 
   const handleExportExcel = () => {
     if (filteredComplaints.length === 0) {
@@ -187,17 +171,18 @@ const App: React.FC = () => {
     addToast(`Exported ${filteredComplaints.length} complaints to CSV`, 'success');
   };
 
+  // Not authenticated — show login
+  if (!currentUser) {
+    return <Login onLogin={setCurrentUser} />;
+  }
+
   // Loading screen
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-mac-light">
         <div className="text-center">
           <div className="w-16 h-16 mx-auto mb-4">
-            <img
-              src="/mac_logo.png"
-              alt="MAC Logo"
-              className="w-full h-full object-contain animate-pulse"
-            />
+            <img src="/mac_logo.png" alt="MAC Logo" className="w-full h-full object-contain animate-pulse" />
           </div>
           <p className="text-slate-600 font-medium">Loading Quality Dashboard...</p>
           <p className="text-slate-400 text-sm mt-1">Downloading complaint database</p>
@@ -251,13 +236,10 @@ const App: React.FC = () => {
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
         <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold text-slate-800">Quality Dashboard</h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Complaint tracking and analytics
-            </p>
+            <p className="text-xs text-slate-400 mt-0.5">Complaint tracking and analytics</p>
           </div>
           <div className="flex items-center gap-3">
             <span className="font-mono text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded uppercase">
@@ -266,16 +248,10 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           <div className="view-transition space-y-6">
-            {/* Metrics */}
-            <MetricsRow
-              allComplaints={complaints}
-              filteredComplaints={filteredComplaints}
-            />
+            <MetricsRow allComplaints={complaints} filteredComplaints={filteredComplaints} />
 
-            {/* Tab switcher */}
             <div className="flex gap-1 bg-white rounded-lg border border-slate-200 p-1 w-fit shadow-sm">
               {tabs.map((tab) => (
                 <button
@@ -292,12 +268,9 @@ const App: React.FC = () => {
               ))}
             </div>
 
-            {/* Tab content */}
             {activeTab === 'data' && <DataTable complaints={filteredComplaints} />}
             {activeTab === 'analytics' && <AnalyticsTab complaints={filteredComplaints} />}
-            {activeTab === 'categories' && (
-              <CategoryBreakdown complaints={filteredComplaints} />
-            )}
+            {activeTab === 'categories' && <CategoryBreakdown complaints={filteredComplaints} />}
           </div>
         </div>
       </main>
